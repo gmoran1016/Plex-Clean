@@ -33,6 +33,8 @@ class LibrarySummary(ApiModel):
     type: Literal["movie", "show"]
     item_count: int = 0
     duplicate_count: int = 0
+    identity_candidate_count: int = 0
+    missing_identity_id_count: int = 0
     scan_state: Literal["idle", "pending", "running", "complete", "failed"] = "idle"
 
 
@@ -51,6 +53,8 @@ class ScanProgress(ApiModel):
     current_library_title: str | None = None
     items_scanned: int = 0
     duplicate_groups: int = 0
+    identity_candidate_groups: int = 0
+    items_without_supported_ids: int = 0
     errors: list[ScanError] = Field(default_factory=list)
 
 
