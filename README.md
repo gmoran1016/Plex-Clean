@@ -16,6 +16,21 @@ Open [http://localhost:8090](http://localhost:8090). To use another host port, c
 HOST_PORT=8091
 ```
 
+## Install with Unraid Docker
+
+The container image is published to `ghcr.io/gmoran1016/plex-clean:latest`. In Unraid, open **Docker → Add Container** and use these settings:
+
+- **Name:** `plex-clean`
+- **Repository:** `ghcr.io/gmoran1016/plex-clean:latest`
+- **Network Type:** `Bridge`
+- **Port:** host `8090` to container `8000` over TCP
+- **Path:** `/mnt/user/appdata/plex-clean` to `/config` (read/write)
+- **Restart policy:** `unless-stopped`
+
+Do not add a Plex media path. Plex-Clean reviews metadata and submits confirmed deletion requests through Plex; it does not need direct access to media files. Keep the web interface on a trusted home network, or protect it with HTTPS and access controls before routing it through a reverse proxy.
+
+After the container starts, open `http://<unraid-ip>:8090`. Sign in with Plex and select the server. If Plex advertises a server address the container cannot reach, set `PLEX_SERVER_URL` to the reachable Plex URL in the container environment and restart it.
+
 The app listens on the configured host port. The named `plex_clean_config` volume mounted at `/config` stores the stable Plex client identifier and the Ed25519 private signing key used for Plex's JWK-backed sign-in. Treat this volume as sensitive and retain it across container restarts.
 
 ## Sign in and scan

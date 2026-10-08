@@ -1,5 +1,6 @@
 services:
   plex-clean:
+    image: ghcr.io/gmoran1016/plex-clean:latest
     build: .
     container_name: plex-clean
     restart: unless-stopped
