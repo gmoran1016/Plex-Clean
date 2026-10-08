@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "./api";
 import { analyzeLowerQualityVersions, bulkSelectionKey, type BulkDeleteItem } from "./bulkSelection";
+import { analyzeSafeIdentityDuplicates, findCandidatesWithoutSurvivors, findDuplicateGroupsWithoutSurvivors } from "./identityBulkSelection";
 import DeleteConfirmation from "./components/DeleteConfirmation";
 import DuplicateList from "./components/DuplicateList";
 import IdentityCandidateList from "./components/IdentityCandidateList";
@@ -8,12 +9,13 @@ import LibrarySidebar from "./components/LibrarySidebar";
 import ScanStatus from "./components/ScanStatus";
 import { isPlexAuthReturn, nextRateLimitedPollDelay, shouldPollPlexAuth } from "./authPolling";
 import { pollScanUpdate } from "./scanPolling";
-import type { AuthStart, DuplicateGroup, IdentityCandidate, LibrarySummary, MediaVersion, ScanProgress, ServerOption, SessionStatus } from "./types";
+import type { AuthStart, DeleteVersionConfirmation, DuplicateGroup, ExternalMediaId, IdentityCandidate, LibrarySummary, MediaVersion, ScanProgress, ServerOption, SessionStatus } from "./types";
 
 const PAGE_SIZE = 25;
+const BULK_PAGE_SIZE = 100;
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Something went wrong. Please try again.";
+  return error instanceof Error ? error.message : "The request failed. Check the current results before trying again.";
 }
 
 function withUpdatedLibrary(libraries: LibrarySummary[], changed: LibrarySummary | null) {
@@ -29,10 +31,45 @@ function totalIdentityCandidates(libraries: LibrarySummary[]) {
   return libraries.reduce((total, library) => total + library.identity_candidate_count, 0);
 }
 
+function identityKey(provider: ExternalMediaId["provider"], identifier: string) {
+  return `${provider}:${identifier}`;
+}
+
+async function loadCompleteLibraryList<T>(
+  libraryId: string,
+  expectedCount: number,
+  collectionName: string,
+  getPage: (offset: number, limit: number) => Promise<T[]>,
+  getKey: (item: T) => string,
+  getLibraryId: (item: T) => string,
+): Promise<T[]> {
+  const pageCount = Math.ceil(expectedCount / BULK_PAGE_SIZE);
+  const pages = await Promise.all(
+    Array.from({ length: pageCount }, (_, page) => getPage(page * BULK_PAGE_SIZE, BULK_PAGE_SIZE)),
+  );
+  const items = pages.flat();
+  const uniqueKeys = new Set(items.map(getKey));
+  if (items.length !== expectedCount || uniqueKeys.size !== expectedCount || items.some((item) => getLibraryId(item) !== libraryId)) {
+    throw new Error(`The ${collectionName} changed while Plex-Clean was loading them. Run a new scan, then select versions again.`);
+  }
+  return items;
+}
+
 function currentGroupFromError(error: ApiError): DuplicateGroup | null | undefined {
   if (typeof error.detail !== "object" || error.detail === null || !("current_group" in error.detail)) return undefined;
-  return (error.detail as { current_group: DuplicateGroup | null }).current_group;
+  const group = (error.detail as { current_group: DuplicateGroup | null }).current_group;
+  return group && group.media_versions.length >= 2 ? group : null;
 }
+
+function updateDuplicateGroupList(groups: DuplicateGroup[], ratingKey: string, fresh: DuplicateGroup | null) {
+  const duplicate = fresh && fresh.media_versions.length >= 2 ? fresh : null;
+  return duplicate
+    ? groups.map((group) => group.rating_key === ratingKey ? duplicate : group)
+    : groups.filter((group) => group.rating_key !== ratingKey);
+}
+
+type DeleteTarget = { group: DuplicateGroup; version: MediaVersion; confirmation: DeleteVersionConfirmation };
+type BulkDeleteTarget = BulkDeleteItem & { confirmation: DeleteVersionConfirmation };
 
 export default function App() {
   const isAuthReturn = isPlexAuthReturn(window.location.search);
@@ -57,11 +94,11 @@ export default function App() {
   const [scanStarting, setScanStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<{ group: DuplicateGroup; version: MediaVersion } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deletePending, setDeletePending] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [bulkSelection, setBulkSelection] = useState<Record<string, BulkDeleteItem>>({});
-  const [bulkTarget, setBulkTarget] = useState<BulkDeleteItem[] | null>(null);
+  const [bulkTarget, setBulkTarget] = useState<BulkDeleteTarget[] | null>(null);
   const [bulkSelecting, setBulkSelecting] = useState(false);
   const [bulkPending, setBulkPending] = useState(false);
   const [bulkCompleted, setBulkCompleted] = useState(false);
@@ -114,7 +151,7 @@ export default function App() {
         setIdentityCandidates([]);
         setIdentityOffset(0);
         setActiveScan(null);
-        setNotice("Plex asked you to sign in again.");
+        setNotice("Your Plex sign-in is no longer active. Sign in again to continue.");
       }).catch(() => undefined);
     };
     window.addEventListener("plexclean:unauthorized", handleUnauthorized);
@@ -138,7 +175,7 @@ export default function App() {
         setLibraries(updated.libraries);
         setActiveScan(updated.scan);
         setSelectedLibraryId((current) => current ?? updated.libraries[0]?.library_id ?? null);
-        if (available.length === 0) setNotice("No reachable Plex Media Server was found. Check Docker network access or configure PLEX_SERVER_URL.");
+        if (available.length === 0) setNotice("Plex-Clean could not reach a Plex Media Server. Check Docker network access or set PLEX_SERVER_URL in your Compose file.");
         else setNotice(null);
       })
       .catch((reason: unknown) => { if (alive) setError(errorMessage(reason)); })
@@ -179,7 +216,7 @@ export default function App() {
         if (alive) {
           if (reason instanceof ApiError && reason.status === 429) {
             rateLimitDelayMs = nextRateLimitedPollDelay(reason.retryAfterSeconds, rateLimitDelayMs);
-            setError(`Plex is temporarily rate limiting sign-in checks. Retrying in ${Math.ceil(rateLimitDelayMs / 1_000)} seconds.`);
+            setError(`Plex is limiting sign-in checks. Plex-Clean will try again in ${Math.ceil(rateLimitDelayMs / 1_000)} seconds.`);
             try {
               const updated = await api.getSession();
               if (alive && updated.authenticated) {
@@ -277,7 +314,7 @@ export default function App() {
         if (latestLibraries) {
           setLibraries(latestLibraries);
           setSession((current) => current ? { ...current, libraries: latestLibraries, scan: update.scan } : current);
-          setNotice(update.scan.errors.length ? `Scan finished with ${update.scan.errors.length} library issue${update.scan.errors.length === 1 ? "" : "s"}.` : null);
+          setNotice(update.scan.errors.length ? `Scan finished with ${update.scan.errors.length} library ${update.scan.errors.length === 1 ? "issue" : "issues"}. See the messages below for details.` : null);
           return;
         }
       } catch (reason) {
@@ -397,16 +434,20 @@ export default function App() {
   }
 
   function changeViewMode(mode: "plex-versions" | "separate-entries") {
+    if (mode !== viewMode) {
+      bulkSelectionRequest.current += 1;
+      setBulkSelecting(false);
+      setBulkSelection({});
+    }
     setViewMode(mode);
     setIdentityOffset(0);
     setIdentityCandidatesError(null);
-    if (mode === "separate-entries") setBulkSelection({});
   }
 
   async function selectLowerQualityVersions() {
     if (!session || !selectedLibrary || deletionDisabled) return;
     if (activeScan?.state !== "complete" || selectedLibrary.scan_state !== "complete") {
-      setError("Run a complete scan of this library before selecting lower-quality versions.");
+      setError("Finish scanning this library before auto-selecting versions for the delete review.");
       return;
     }
 
@@ -417,16 +458,15 @@ export default function App() {
     setError(null);
     setNotice(null);
     try {
-      const pageSize = 100;
-      const pageCount = Math.ceil(expectedCount / pageSize);
+      const pageCount = Math.ceil(expectedCount / BULK_PAGE_SIZE);
       const pages = await Promise.all(
-        Array.from({ length: pageCount }, (_, page) => api.getDuplicates(libraryId, page * pageSize, pageSize)),
+        Array.from({ length: pageCount }, (_, page) => api.getDuplicates(libraryId, page * BULK_PAGE_SIZE, BULK_PAGE_SIZE)),
       );
       if (bulkSelectionRequest.current !== requestId) return;
       const allGroups = pages.flat();
       const uniqueRatingKeys = new Set(allGroups.map((group) => group.rating_key));
       if (allGroups.length !== expectedCount || uniqueRatingKeys.size !== expectedCount || allGroups.some((group) => group.library_id !== libraryId)) {
-        throw new Error("The full duplicate list changed while it was loading. Run a fresh scan, then try again.");
+        throw new Error("The version list changed while Plex-Clean was loading it. Run a new scan, then select versions again.");
       }
 
       const automaticallySelected: BulkDeleteItem[] = [];
@@ -444,9 +484,11 @@ export default function App() {
         automaticallySelected.forEach((item) => { next[item.key] = item; });
         return next;
       });
-      setNotice(automaticallySelected.length
-        ? `Selected ${automaticallySelected.length} clearly lower-quality versions across the whole library. ${skippedGroups} groups were left unchanged for ties, unknown quality, edition differences, or runtime variants; ${skippedVersions} copies lacked complete Plex file details.`
-        : `No clearly lower-quality versions were selected. ${skippedGroups} groups were left unchanged for ties, unknown quality, edition differences, or runtime variants; ${skippedVersions} copies lacked complete Plex file details.`);
+      const addedCount = automaticallySelected.filter((item) => !bulkSelection[item.key]).length;
+      const skipSummary = `${skippedGroups} ${skippedGroups === 1 ? "group needs" : "groups need"} your review because quality, edition, runtime, or tied-version details are unclear; ${skippedVersions} ${skippedVersions === 1 ? "version lacks" : "versions lack"} Plex file details needed for deletion.`;
+      setNotice(addedCount
+        ? `Added ${addedCount} ${addedCount === 1 ? "version" : "versions"} to the delete review. Auto-selection chose clearly lower-resolution or lower-bitrate versions, plus tied versions whose Plex file and stream details match. ${skipSummary} Nothing has been deleted.`
+        : `No new versions were added to the delete review. ${skipSummary} Nothing has been deleted.`);
     } catch (reason) {
       if (bulkSelectionRequest.current === requestId) setError(errorMessage(reason));
     } finally {
@@ -454,23 +496,161 @@ export default function App() {
     }
   }
 
-  function toggleBulkSelection(group: DuplicateGroup, version: MediaVersion, selected: boolean) {
+  async function selectSafeIdentityDuplicates() {
+    if (!session || !selectedLibrary || deletionDisabled) return;
+    if (activeScan?.state !== "complete" || selectedLibrary.scan_state !== "complete") {
+      setError("Finish scanning this library before auto-selecting versions for the delete review.");
+      return;
+    }
+
+    const libraryId = selectedLibrary.library_id;
+    const expectedCount = selectedLibrary.identity_candidate_count;
+    const requestId = ++bulkSelectionRequest.current;
+    setBulkSelecting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const candidates = await loadCompleteLibraryList(
+        libraryId,
+        expectedCount,
+        "matching-ID groups",
+        (offset, limit) => api.getIdentityCandidates(libraryId, offset, limit),
+        (candidate) => identityKey(candidate.matched_provider, candidate.matched_identifier),
+        (candidate) => candidate.library_id,
+      );
+      if (bulkSelectionRequest.current !== requestId) return;
+      const analysis = analyzeSafeIdentityDuplicates(candidates);
+      setBulkSelection((current) => {
+        const next = { ...current };
+        analysis.selected.forEach((item) => { next[item.key] = item; });
+        return next;
+      });
+      const addedCount = analysis.selected.filter((item) => !bulkSelection[item.key]).length;
+      const resultingCount = selectedBulkItems.length + addedCount;
+      setNotice(`${addedCount ? `Added ${addedCount} lower-quality ${addedCount === 1 ? "version" : "versions"} to the delete review` : "No new versions were added to the delete review"}. ${resultingCount} ${resultingCount === 1 ? "version is" : "versions are"} selected. ${analysis.skippedCandidates} ${analysis.skippedCandidates === 1 ? "matching-ID group needs" : "matching-ID groups need"} review because editions, runtimes, quality, or overlapping matches are unclear; ${analysis.skippedVersions} ${analysis.skippedVersions === 1 ? "version lacks" : "versions lack"} complete Plex file details. Nothing has been deleted.`);
+    } catch (reason) {
+      if (bulkSelectionRequest.current === requestId) setError(errorMessage(reason));
+    } finally {
+      if (bulkSelectionRequest.current === requestId) setBulkSelecting(false);
+    }
+  }
+
+  function toggleBulkSelection(
+    group: DuplicateGroup,
+    version: MediaVersion,
+    selected: boolean,
+    reviewedIdentity: ExternalMediaId | null = null,
+  ) {
     const key = bulkSelectionKey(group, version);
     setBulkSelection((current) => {
       const next = { ...current };
-      if (selected) next[key] = { key, group, version, reason: "Manually selected" };
+      if (selected) next[key] = { key, group, version, reason: "Manually selected", reviewedIdentity };
       else delete next[key];
       return next;
     });
   }
 
-  function requestBulkDelete() {
+  function captureDeletionConfirmation(
+    group: DuplicateGroup,
+    version: MediaVersion,
+    reviewedIdentity: ExternalMediaId | null = null,
+  ): DeleteVersionConfirmation | null {
+    const serverId = session?.selected_server?.machine_identifier;
+    if (!serverId || !activeScan || activeScan.state !== "complete" || !version.media_id
+      || !version.parts.length || version.parts.some((part) => !part.part_id || !part.file)) return null;
+    return {
+      server_id: serverId,
+      scan_id: activeScan.scan_id,
+      library_id: group.library_id,
+      confirmed_parts: version.parts.map((part) => ({ part_id: part.part_id!, file: part.file! })),
+      reviewed_identity: reviewedIdentity,
+    };
+  }
+
+  async function requestBulkDelete() {
     const items = Object.values(bulkSelection);
-    if (!items.length || deletionDisabled) return;
-    setBulkTarget(items);
-    setBulkProgress(0);
-    setBulkCompleted(false);
-    setBulkError(null);
+    if (!items.length || deletionDisabled || !session || !selectedLibrary) return;
+    if (activeScan?.state !== "complete" || selectedLibrary.scan_state !== "complete") {
+      setError("Finish scanning this library before reviewing the selected deletions.");
+      return;
+    }
+
+    const requestId = ++bulkSelectionRequest.current;
+    const selectedKeys = new Set(items.map((item) => item.key));
+    setBulkSelecting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      let freshItems: BulkDeleteItem[];
+      if (viewMode === "separate-entries") {
+        const candidates = await loadCompleteLibraryList(
+          selectedLibrary.library_id,
+          selectedLibrary.identity_candidate_count,
+          "matching-ID groups",
+          (offset, limit) => api.getIdentityCandidates(selectedLibrary.library_id, offset, limit),
+          (candidate) => identityKey(candidate.matched_provider, candidate.matched_identifier),
+          (candidate) => candidate.library_id,
+        );
+        if (bulkSelectionRequest.current !== requestId) return;
+        if (findCandidatesWithoutSurvivors(candidates, selectedKeys).length) {
+          throw new Error("Keep at least one version in each matching-ID group before reviewing the deletions.");
+        }
+        const candidatesByIdentity = new Map(candidates.map((candidate) => [
+          identityKey(candidate.matched_provider, candidate.matched_identifier),
+          candidate,
+        ]));
+        freshItems = items.map((item) => {
+          if (!item.reviewedIdentity) return null;
+          const reviewedKey = identityKey(item.reviewedIdentity.provider, item.reviewedIdentity.identifier);
+          const candidate = candidatesByIdentity.get(reviewedKey);
+          const group = candidate?.entries.find((entry) => entry.rating_key === item.group.rating_key);
+          const version = group?.media_versions.find((current) => current.media_id === item.version.media_id);
+          return group && version ? { ...item, group, version } : null;
+        }).filter((item): item is BulkDeleteItem => item !== null);
+        if (freshItems.length !== items.length) {
+          throw new Error("A selected version is no longer in the current results. Run a new scan, then select it again.");
+        }
+      } else {
+        const groups = await loadCompleteLibraryList(
+          selectedLibrary.library_id,
+          selectedLibrary.duplicate_count,
+        "version groups",
+          (offset, limit) => api.getDuplicates(selectedLibrary.library_id, offset, limit),
+          (group) => group.rating_key,
+          (group) => group.library_id,
+        );
+        if (bulkSelectionRequest.current !== requestId) return;
+        if (findDuplicateGroupsWithoutSurvivors(groups, selectedKeys).length) {
+          throw new Error("Keep at least one version in each Plex item before reviewing the deletions.");
+        }
+        const groupsByRatingKey = new Map(groups.map((group) => [group.rating_key, group]));
+        const refreshedItems = items.map((item): BulkDeleteItem | null => {
+          const group = groupsByRatingKey.get(item.group.rating_key);
+          const version = group?.media_versions.find((current) => current.media_id === item.version.media_id);
+          return group && version ? { ...item, group, version, reviewedIdentity: null } : null;
+        });
+        freshItems = refreshedItems.filter((item): item is BulkDeleteItem => item !== null);
+        if (freshItems.length !== items.length) {
+          throw new Error("A selected version is no longer in the current results. Run a new scan, then select it again.");
+        }
+      }
+      if (bulkSelectionRequest.current !== requestId) return;
+      const confirmedItems = freshItems.map((item) => {
+        const confirmation = captureDeletionConfirmation(item.group, item.version, item.reviewedIdentity);
+        return confirmation ? { ...item, confirmation } : null;
+      });
+      if (confirmedItems.some((item) => item === null)) {
+        throw new Error("Plex no longer provides all file details needed to delete a selected version. Run a new scan before continuing.");
+      }
+      setBulkTarget(confirmedItems as BulkDeleteTarget[]);
+      setBulkProgress(0);
+      setBulkCompleted(false);
+      setBulkError(null);
+    } catch (reason) {
+      if (bulkSelectionRequest.current === requestId) setError(errorMessage(reason));
+    } finally {
+      if (bulkSelectionRequest.current === requestId) setBulkSelecting(false);
+    }
   }
 
   async function confirmBulkDelete() {
@@ -481,6 +661,8 @@ export default function App() {
     setError(null);
     let confirmedDeletes = 0;
     let stopReason: string | null = null;
+    let previousDuplicateCount = selectedLibrary?.duplicate_count ?? 0;
+    let previousIdentityCandidateCount = selectedLibrary?.identity_candidate_count ?? 0;
 
     for (const item of bulkTarget) {
       if (!item.version.media_id || !item.version.parts.length || item.version.parts.some((part) => !part.part_id || !part.file)) {
@@ -488,20 +670,27 @@ export default function App() {
         break;
       }
       try {
-        const result = await api.deleteVersion(item.group.rating_key, item.version.media_id, session.csrf_token);
+        const result = await api.deleteVersion(item.group.rating_key, item.version.media_id, item.confirmation, session.csrf_token);
+        const resultGroup = result.group && result.group.media_versions.length >= 2 ? result.group : null;
         confirmedDeletes += 1;
         setBulkProgress(confirmedDeletes);
-        setGroups((current) => result.group
-          ? current.map((group) => group.rating_key === result.group?.rating_key ? result.group! : group)
-          : current.filter((group) => group.rating_key !== item.group.rating_key));
+        setGroups((current) => updateDuplicateGroupList(current, item.group.rating_key, resultGroup));
         setLibraries((current) => withUpdatedLibrary(current, result.library));
         setSession((current) => current && result.library
           ? { ...current, libraries: withUpdatedLibrary(current.libraries, result.library) }
           : current);
-        setActiveScan((current) => current
-          ? { ...current, duplicate_groups: Math.max(0, current.duplicate_groups - (result.group ? 0 : 1)) }
-          : current);
-        if (!result.group && result.library) {
+        if (result.library) {
+          const duplicateDelta = result.library.duplicate_count - previousDuplicateCount;
+          const identityCandidateDelta = result.library.identity_candidate_count - previousIdentityCandidateCount;
+          setActiveScan((current) => current ? {
+            ...current,
+            duplicate_groups: Math.max(0, current.duplicate_groups + duplicateDelta),
+            identity_candidate_groups: Math.max(0, current.identity_candidate_groups + identityCandidateDelta),
+          } : current);
+          previousDuplicateCount = result.library.duplicate_count;
+          previousIdentityCandidateCount = result.library.identity_candidate_count;
+        }
+        if (!resultGroup && result.library) {
           setOffset((current) => {
             const lastVisibleOffset = result.library!.duplicate_count > 0
               ? Math.floor((result.library!.duplicate_count - 1) / PAGE_SIZE) * PAGE_SIZE
@@ -517,9 +706,7 @@ export default function App() {
         if (reason instanceof ApiError && reason.status === 409) {
           const fresh = currentGroupFromError(reason);
           if (fresh !== undefined) {
-            setGroups((current) => fresh
-              ? current.map((group) => group.rating_key === fresh.rating_key ? fresh : group)
-              : current.filter((group) => group.rating_key !== item.group.rating_key));
+            setGroups((current) => updateDuplicateGroupList(current, item.group.rating_key, fresh));
             if (!fresh) {
               try {
                 const latestLibraries = await api.getLibraries();
@@ -535,11 +722,20 @@ export default function App() {
     }
 
     setBulkSelection({});
+    if (viewMode === "separate-entries") {
+      setIdentityRefreshKey((current) => current + 1);
+      setIdentityOffset((current) => {
+        const lastVisibleOffset = previousIdentityCandidateCount > 0
+          ? Math.floor((previousIdentityCandidateCount - 1) / PAGE_SIZE) * PAGE_SIZE
+          : 0;
+        return Math.min(current, lastVisibleOffset);
+      });
+    }
     if (stopReason) {
-      setBulkError(`${stopReason} The batch stopped after Plex confirmed ${confirmedDeletes} of ${bulkTarget.length} requested deletions. Run a fresh scan before selecting again.`);
+      setBulkError(`${stopReason} Plex confirmed deletion for ${confirmedDeletes} of ${bulkTarget.length} selected versions before the batch stopped. Remaining requests were not sent. Run a new scan before selecting again.`);
       setBulkCompleted(true);
     } else {
-      setNotice(`Plex accepted ${confirmedDeletes} selected media version delete requests.`);
+      setNotice(`Plex accepted delete requests for ${confirmedDeletes} selected ${confirmedDeletes === 1 ? "version" : "versions"}.`);
       setBulkTarget(null);
       setBulkCompleted(false);
     }
@@ -552,11 +748,12 @@ export default function App() {
     setDeleteError(null);
     setError(null);
     try {
-      const result = await api.deleteVersion(deleteTarget.group.rating_key, deleteTarget.version.media_id, session.csrf_token);
-      if (result.group && !result.refresh_warning) {
-        setGroups((current) => current.map((group) => group.rating_key === result.group?.rating_key ? result.group! : group));
-      } else if (!result.group) {
-        setGroups((current) => current.filter((group) => group.rating_key !== deleteTarget.group.rating_key));
+      const result = await api.deleteVersion(deleteTarget.group.rating_key, deleteTarget.version.media_id, deleteTarget.confirmation, session.csrf_token);
+      const resultGroup = result.group && result.group.media_versions.length >= 2 ? result.group : null;
+      if (resultGroup && !result.refresh_warning) {
+        setGroups((current) => updateDuplicateGroupList(current, deleteTarget.group.rating_key, resultGroup));
+      } else if (!resultGroup) {
+        setGroups((current) => updateDuplicateGroupList(current, deleteTarget.group.rating_key, null));
         if (offset > 0 && groups.length <= 1) setOffset((current) => Math.max(0, current - PAGE_SIZE));
       }
       setLibraries((current) => withUpdatedLibrary(current, result.library));
@@ -575,8 +772,8 @@ export default function App() {
         setIdentityOffset((current) => Math.min(current, lastVisibleOffset));
       }
       setNotice(result.refresh_warning
-        ? "Plex accepted the delete request, but the item could not be refreshed. Rescan this library before taking another action."
-        : "Plex accepted the selected media version delete request.");
+        ? "Plex accepted the delete request, but could not refresh the item. Run a new scan before choosing again."
+        : "Plex accepted the request to delete this version.");
       setIdentityRefreshKey((current) => current + 1);
       setBulkSelection({});
       setDeleteTarget(null);
@@ -585,9 +782,7 @@ export default function App() {
         setBulkSelection({});
         const fresh = currentGroupFromError(reason);
         if (fresh !== undefined) {
-          setGroups((current) => fresh
-            ? current.map((group) => group.rating_key === fresh.rating_key ? fresh : group)
-            : current.filter((group) => group.rating_key !== deleteTarget.group.rating_key));
+          setGroups((current) => updateDuplicateGroupList(current, deleteTarget.group.rating_key, fresh));
           if (viewMode === "separate-entries") {
             await refreshIdentityAfterConflict();
           } else if (!fresh) {
@@ -600,11 +795,16 @@ export default function App() {
     } finally { setDeletePending(false); }
   }
 
-  function requestDelete(group: DuplicateGroup, version: MediaVersion) {
+  function requestDelete(group: DuplicateGroup, version: MediaVersion, reviewedIdentity: ExternalMediaId | null = null) {
     setDeleteError(null);
     setBulkCompleted(false);
     setBulkError(null);
-    setDeleteTarget({ group, version });
+    const confirmation = captureDeletionConfirmation(group, version, reviewedIdentity);
+    if (!confirmation) {
+      setDeleteError("Plex is missing file details needed to delete this version, or the scan is out of date. Run a new scan before continuing.");
+      return;
+    }
+    setDeleteTarget({ group, version, confirmation });
   }
 
   const currentServer = session?.selected_server ?? null;
@@ -612,7 +812,7 @@ export default function App() {
   const deletionBlockedReason = currentServer?.allow_media_deletion === false
     ? "Plex reports that media deletion is disabled on this server."
     : currentServer?.allow_media_deletion === null
-      ? "Plex did not confirm that media deletion is enabled; this app keeps deletion unavailable."
+      ? "Plex has not confirmed that deletion is enabled, so deletion is unavailable."
       : null;
   const selectedBulkItems = Object.values(bulkSelection);
 
@@ -625,14 +825,14 @@ export default function App() {
       <main className="login-screen">
         <section className="login-panel">
           <Wordmark />
-          <h1>{!session ? "Restoring your Plex sign-in…" : session.authenticated ? "Plex sign-in complete." : session.auth_pending ? "Checking your Plex sign-in." : "No pending Plex sign-in."}</h1>
+          <h1>{!session ? "Restoring your Plex sign-in…" : session.authenticated ? "Plex sign-in complete." : session.auth_pending ? "Checking your Plex sign-in." : "No sign-in is pending."}</h1>
           <p className="login-description">{!session
             ? "Restoring the app session returned by Plex."
             : session.auth_pending
-              ? "Plex returned to the app. This tab is checking the approved PIN; keep it open for a moment."
+              ? "Plex returned you to the app. Keep this tab open while Plex-Clean checks your sign-in."
               : session.authenticated
                 ? "Opening your Plex libraries…"
-                : "Return to Plex-Clean and start a new sign-in link."}</p>
+                : "Return to Plex-Clean and start a new sign-in."}</p>
           {error && <p className="alert alert-error" role="alert">{error}</p>}
           {!session?.authenticated && <a className="button button-primary" href="/">Return to Plex-Clean</a>}
         </section>
@@ -649,28 +849,28 @@ export default function App() {
       <main className="login-screen">
         <section className="login-panel">
           <Wordmark />
-          <h1>Compare every version.<br /><span>Keep the one you choose.</span></h1>
-          <p className="login-description">Review duplicate movie and episode versions in your Plex libraries, then remove a selected version through Plex.</p>
+          <h1>Review Plex versions.<br /><span>Choose what to remove.</span></h1>
+          <p className="login-description">Compare multiple versions of movies and episodes, then review the selected files before asking Plex to delete them.</p>
           {error && <p className="alert alert-error" role="alert">{error}</p>}
           {notice && <p className="alert alert-info" role="status">{notice}</p>}
           {authStart ? (
             <div className="login-pending">
-              <p>Open Plex Link and enter this one-time code to authorize Plex-Clean.</p>
+              <p>Open Plex Link, enter this one-time code, and approve Plex-Clean.</p>
               <code className="plex-pin-code" aria-label="Plex sign-in code">{authStart.pin_code}</code>
               <a className="button button-primary" href={authStart.authorization_url} rel="noreferrer" target="_blank">Open Plex Link</a>
-              <p>Leave this page open while Plex-Clean checks for approval.</p>
+              <p>Keep this page open while Plex-Clean checks for approval.</p>
               <p className="expiry-note">PIN expires {new Date(authStart.expires_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.</p>
             </div>
           ) : session.auth_pending || loginInitiated ? (
             <div className="login-pending">
-              <p>A Plex sign-in PIN is already waiting.</p>
-              <button className="button button-primary" disabled={loginInitiated} onClick={startLogin} type="button">Create a new sign-in link</button>
-              <p>After opening Plex sign-in, keep this page open while the app checks for approval.</p>
+              <p>A sign-in request is already pending. If you no longer have its code, start a new one.</p>
+              <button className="button button-primary" disabled={loginInitiated} onClick={startLogin} type="button">Get a new sign-in code</button>
+              <p>Keep this page open while Plex-Clean checks for approval.</p>
             </div>
           ) : (
             <button className="button button-primary login-action" onClick={startLogin} type="button">Sign in with Plex</button>
           )}
-          <p className="privacy-note">Your Plex token stays in this app's server memory and is never stored in the browser.</p>
+          <p className="privacy-note">Plex-Clean keeps your Plex token in server memory and stops using it after 24 hours. It is never stored in your browser.</p>
         </section>
       </main>
     );
@@ -684,7 +884,7 @@ export default function App() {
           {servers.length > 1 ? (
             <label className="server-picker">
               <span className="server-label">PLEX SERVER</span>
-              <select aria-label="Selected Plex server" onChange={(event) => void changeServer(event.target.value)} value={selectedServerId ?? ""}>
+              <select aria-label="Plex server" onChange={(event) => void changeServer(event.target.value)} value={selectedServerId ?? ""}>
                 {!selectedServerId && <option value="">Choose a server</option>}
                 {servers.map((server) => <option key={server.machine_identifier} value={server.machine_identifier}>{server.name}</option>)}
               </select>
@@ -706,34 +906,34 @@ export default function App() {
         <main className="main-content">
           {!selectedServerId ? (
             <section className="content-empty server-empty">
-              <h1>{serversLoading ? "Finding your Plex server" : servers.length ? "Choose a Plex server" : "No reachable Plex server"}</h1>
+              <h1>{serversLoading ? "Finding your Plex server" : servers.length ? "Choose a Plex server" : "No Plex server is reachable"}</h1>
               <p>{serversLoading
                 ? "Checking the server connections available to your account."
                 : servers.length
                   ? "Select the Plex Media Server whose movie and TV libraries you want to review."
-                  : "Make sure Docker can reach your Plex Media Server, then retry. You can also set PLEX_SERVER_URL in Compose."}</p>
+                  : "Check that Docker can reach your Plex Media Server. If discovery still fails, set PLEX_SERVER_URL in your Compose file."}</p>
               {!serversLoading && !servers.length && <button className="button button-secondary" onClick={() => void api.getServers().then(setServers).then(refreshSession).catch((reason) => setError(errorMessage(reason)))} type="button">Try again</button>}
             </section>
           ) : (
             <>
               <div className="page-heading">
                 <div>
-                  <h1>{viewMode === "plex-versions" ? "Duplicate versions" : "Separate Plex entries"}</h1>
+                  <h1>{viewMode === "plex-versions" ? "Versions of one Plex item" : "Separate Plex items"}</h1>
                   <p>{viewMode === "plex-versions"
-                    ? "Compare media versions attached to one Plex item."
-                    : "Review distinct Plex items that share an exact metadata ID."}</p>
+                    ? "Compare the media versions Plex lists for a single library item."
+                    : "Compare separate items with the same IMDb, TMDb, or TVDb ID. A shared ID is a review clue, not proof the files are identical."}</p>
                 </div>
                 {selectedLibrary && <p className="active-library-note">{selectedLibrary.title}</p>}
               </div>
               <ScanStatus scan={activeScan} onScan={scanLibraries} busy={scanStarting} disabled={!currentServer} />
-              <div className="review-mode-switch" role="group" aria-label="Duplicate review mode">
+              <div className="review-mode-switch" role="group" aria-label="Comparison view">
                 <button
                   aria-pressed={viewMode === "plex-versions"}
                   className={viewMode === "plex-versions" ? "is-active" : ""}
                   onClick={() => changeViewMode("plex-versions")}
                   type="button"
                 >
-                  Plex versions <span>{selectedLibrary?.duplicate_count.toLocaleString() ?? "0"}</span>
+                  Same item <span>{selectedLibrary?.duplicate_count.toLocaleString() ?? "0"}</span>
                 </button>
                 <button
                   aria-pressed={viewMode === "separate-entries"}
@@ -741,7 +941,7 @@ export default function App() {
                   onClick={() => changeViewMode("separate-entries")}
                   type="button"
                 >
-                  Separate entries <span>{selectedLibrary?.identity_candidate_count.toLocaleString() ?? "0"}</span>
+                  Separate items <span>{selectedLibrary?.identity_candidate_count.toLocaleString() ?? "0"}</span>
                 </button>
               </div>
               {activeScan?.errors.map((scanError) => (
@@ -750,11 +950,11 @@ export default function App() {
                 </p>
               ))}
               {viewMode === "plex-versions" && selectedLibrary && selectedLibrary.duplicate_count > 0 && (
-                <section className="bulk-toolbar" aria-label="Bulk version selection">
+                <section className="bulk-toolbar" aria-label="Selection tools for items with multiple versions">
                   <div className="bulk-toolbar-copy">
                     <strong>{selectedBulkItems.length} {selectedBulkItems.length === 1 ? "version" : "versions"} selected</strong>
-                    <span>Selection carries across pages. Automatic selection checks the whole library and skips ties, unknown quality, different editions, or runtimes differing by over one minute or 1%, whichever is greater.</span>
-                    {bulkSelecting && <span role="status">Comparing every duplicate group in {selectedLibrary.title}…</span>}
+                    <span>Selections stay active across pages. Auto-selection marks clearly lower-resolution or lower-bitrate versions, plus tied versions with matching Plex file and stream details. It skips unclear quality ties, different editions, and runtime differences. Review the selected files before asking Plex to delete them; selection alone deletes nothing.</span>
+                    {bulkSelecting && <span role="status">Checking every multi-version item in {selectedLibrary.title}…</span>}
                   </div>
                   <div className="bulk-toolbar-actions">
                     <button
@@ -763,7 +963,7 @@ export default function App() {
                       onClick={() => void selectLowerQualityVersions()}
                       type="button"
                     >
-                      Select lower-quality across library
+                      Auto-select versions for review
                     </button>
                     <button
                       className="button button-secondary"
@@ -776,10 +976,45 @@ export default function App() {
                     <button
                       className="button button-danger"
                       disabled={!selectedBulkItems.length || deletionDisabled || bulkSelecting || bulkPending}
-                      onClick={requestBulkDelete}
+                      onClick={() => void requestBulkDelete()}
                       type="button"
                     >
-                      Review &amp; delete{selectedBulkItems.length ? ` (${selectedBulkItems.length})` : ""}
+                      Review selected deletions{selectedBulkItems.length ? ` (${selectedBulkItems.length})` : ""}
+                    </button>
+                  </div>
+                </section>
+              )}
+              {viewMode === "separate-entries" && selectedLibrary && selectedLibrary.identity_candidate_count > 0 && (
+                <section className="bulk-toolbar" aria-label="Selection tools for matching Plex items">
+                  <div className="bulk-toolbar-copy">
+                    <strong>{selectedBulkItems.length} {selectedBulkItems.length === 1 ? "version" : "versions"} selected</strong>
+                    <span>Selections stay active across pages. Auto-selection only considers separate items that share an IMDb, TMDb, or TVDb ID, have no known edition conflict, have one version each, and have comparable runtimes. It marks lower-quality versions for review and skips unclear quality or overlapping ID matches. Review every selection before asking Plex to delete it; selection alone deletes nothing.</span>
+                    {bulkSelecting && <span role="status">Checking every matching-ID group in {selectedLibrary.title}…</span>}
+                  </div>
+                  <div className="bulk-toolbar-actions">
+                    <button
+                      className="button button-secondary"
+                      disabled={deletionDisabled || bulkSelecting || bulkPending || activeScan?.state !== "complete" || selectedLibrary.scan_state !== "complete"}
+                      onClick={() => void selectSafeIdentityDuplicates()}
+                      type="button"
+                    >
+                      Auto-select versions for review
+                    </button>
+                    <button
+                      className="button button-secondary"
+                      disabled={!selectedBulkItems.length || bulkSelecting || bulkPending}
+                      onClick={() => setBulkSelection({})}
+                      type="button"
+                    >
+                      Clear selection
+                    </button>
+                    <button
+                      className="button button-danger"
+                      disabled={!selectedBulkItems.length || deletionDisabled || bulkSelecting || bulkPending || activeScan?.state !== "complete" || selectedLibrary.scan_state !== "complete"}
+                      onClick={() => void requestBulkDelete()}
+                      type="button"
+                    >
+                      Review selected deletions{selectedBulkItems.length ? ` (${selectedBulkItems.length})` : ""}
                     </button>
                   </div>
                 </section>
@@ -808,11 +1043,13 @@ export default function App() {
                   limit={PAGE_SIZE}
                   loading={identityCandidatesLoading}
                   error={identityCandidatesError}
-                  deletionDisabled={deletionDisabled}
+                  deletionDisabled={deletionDisabled || bulkSelecting || bulkPending}
                   deletionBlockedReason={deletionBlockedReason}
+                  isSelected={(group, version) => Boolean(bulkSelection[bulkSelectionKey(group, version)])}
                   onPage={setIdentityOffset}
                   onRetry={() => setIdentityRefreshKey((current) => current + 1)}
                   onDelete={requestDelete}
+                  onToggleSelection={(group, version, reviewedIdentity, selected) => toggleBulkSelection(group, version, selected, reviewedIdentity)}
                 />
               )}
               {currentServer?.allow_media_deletion === true && <p className="permission-note">Plex permits media deletion on this server; Plex may still require a server administrator account.</p>}

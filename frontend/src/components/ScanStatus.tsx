@@ -13,10 +13,10 @@ export default function ScanStatus({ scan, onScan, busy, disabled }: Props) {
           <strong>{running ? "Scanning libraries" : complete ? "Scan complete" : scan?.errors.length ? "Scan finished with issues" : "Ready to scan"}</strong>
           <span className="scan-caption">
             {running
-              ? `${scan?.current_library_title ?? "Preparing"} · ${scan?.items_scanned.toLocaleString() ?? "0"} items reviewed · ${scan?.items_without_supported_ids.toLocaleString() ?? "0"} without supported IDs`
+              ? `${scan?.current_library_title ?? "Getting ready"} · ${scan?.items_scanned.toLocaleString() ?? "0"} items scanned · ${scan?.items_without_supported_ids.toLocaleString() ?? "0"} without an IMDb, TMDb, or TVDb ID`
               : scan?.state === "complete" || scan?.state === "failed"
-                ? `${scan.duplicate_groups.toLocaleString()} Plex-version groups · ${scan.identity_candidate_groups.toLocaleString()} shared-ID candidates · ${scan.items_without_supported_ids.toLocaleString()} items without supported IDs`
-                : "Review versions in your movie and TV libraries"}
+                ? `${scan.duplicate_groups.toLocaleString()} items with multiple versions · ${scan.identity_candidate_groups.toLocaleString()} matching-ID groups · ${scan.items_without_supported_ids.toLocaleString()} items without an IMDb, TMDb, or TVDb ID`
+                : "Scan your movie and TV libraries to compare media versions"}
           </span>
         </div>
       </div>

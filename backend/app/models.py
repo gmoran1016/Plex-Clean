@@ -155,3 +155,11 @@ class DeleteResult(ApiModel):
     group: DuplicateGroup | None = None
     library: LibrarySummary | None = None
     refresh_warning: bool = False
+
+
+class DeleteVersionRequest(ApiModel):
+    server_id: str = Field(min_length=1)
+    scan_id: str = Field(min_length=1)
+    library_id: str = Field(min_length=1)
+    confirmed_parts: list[PartInfo] = Field(min_length=1)
+    reviewed_identity: ExternalMediaId | None = None

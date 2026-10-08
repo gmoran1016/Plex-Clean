@@ -51,7 +51,7 @@ export default function VersionCard({ version, index, deletionDisabled, selected
         {showBulkSelection ? (
           <label className="version-selection">
             <input
-              aria-label={`Select version ${index + 1} for bulk deletion`}
+              aria-label={`Add version ${index + 1} to the delete review`}
               checked={selected}
               disabled={deleteDisabled}
               onChange={(event) => onToggleSelection(event.target.checked)}
@@ -72,7 +72,7 @@ export default function VersionCard({ version, index, deletionDisabled, selected
         <div><dt>Bitrate</dt><dd>{version.bitrate_kbps ? `${version.bitrate_kbps.toLocaleString()} kb/s` : "Unavailable"}</dd></div>
       </dl>
       <details className="version-details">
-        <summary>Show file and stream details</summary>
+        <summary>Show file paths and stream details</summary>
         <div className="detail-content">
           <div className="part-list">
             <h4>Files Plex associates with this version</h4>
@@ -90,8 +90,7 @@ export default function VersionCard({ version, index, deletionDisabled, selected
           <button className="button button-danger-outline" disabled={deleteDisabled} onClick={onDelete} type="button">
             Delete this version
           </button>
-          {!version.media_id && <p className="delete-note">Plex did not provide a media identifier for this version.</p>}
-          {!partsAreIdentifiable && <p className="delete-note">Plex must provide every part ID and path before this version can be deleted.</p>}
+          {(!version.media_id || !partsAreIdentifiable) && <p className="delete-note">Plex did not provide all the media details needed to delete this version. Try a new scan.</p>}
         </div>
       </details>
     </section>

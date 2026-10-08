@@ -10,6 +10,7 @@ import httpx
 from app.config import Settings
 from app.main import create_app
 from app.models import DuplicateGroup, IdentityCandidate, LibrarySummary, MediaVersion, ServerOption
+from app.plex.identity import external_identity_ids
 from app.plex.library import PlexLibraryService
 from app.sessions import AppSession, ServerAccess, SessionStore
 
@@ -141,6 +142,38 @@ class IdentityScanTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(progress.items_without_supported_ids, 2)
         self.assertEqual(library.missing_identity_id_count, 2)
+
+    async def test_invalid_provider_placeholders_do_not_form_candidates_and_count_as_missing(self) -> None:
+        library = movie_library()
+        placeholder_ids = ("tmdb://null", "imdb://unknown", "tvdb://0")
+
+        service, _, session, progress = await self.scan(
+            {("1", 0): [item("a", ids=placeholder_ids), item("b", ids=placeholder_ids)]},
+            [library],
+        )
+
+        self.assertEqual(service.get_identity_candidates(session, "1", 0, 10), [])
+        self.assertEqual(progress.identity_candidate_groups, 0)
+        self.assertEqual(library.identity_candidate_count, 0)
+        self.assertEqual(progress.items_without_supported_ids, 2)
+        self.assertEqual(library.missing_identity_id_count, 2)
+
+    def test_external_ids_validate_provider_shapes_and_ignore_agent_query_metadata(self) -> None:
+        identities = external_identity_ids({
+            "Guid": [
+                {"id": "imdb://TT123?lang=en#item"},
+                {"id": "tmdb://movie/550?lang=en#metadata"},
+                {"id": "tvdb://series/42"},
+                {"id": "tmdb://null"},
+                {"id": "imdb://unknown"},
+                {"id": "tvdb://0"},
+            ]
+        })
+
+        self.assertEqual(
+            [(identity.provider, identity.identifier) for identity in identities],
+            [("imdb", "tt123"), ("tmdb", "movie/550"), ("tvdb", "series/42")],
+        )
 
     async def test_scan_does_not_change_plex_duplicate_group_count(self) -> None:
         library = movie_library()

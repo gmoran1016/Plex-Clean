@@ -1,0 +1,27 @@
+services:
+  plex-clean:
+    build: .
+    container_name: plex-clean
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${HOST_PORT:-8090}:8000"
+    environment:
+      PLEX_CONFIG_DIR: /config
+      PLEX_SERVER_URL: ${PLEX_SERVER_URL:-}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+    volumes:
+      - plex_clean_config:/config
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  plex_clean_config:

@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from fastapi import HTTPException
 
-from app.models import DeleteResult, DuplicateGroup, ExternalMediaId, IdentityCandidate, LibrarySummary
+from app.models import DeleteResult, DuplicateGroup, ExternalMediaId, IdentityCandidate, LibrarySummary, PartInfo
 from app.plex.client import PlexClient
 from app.plex.identity import build_identity_candidates, external_identity_ids
 from app.plex.library import normalize_media_item
@@ -71,7 +71,18 @@ class DeletionService:
             identities=external_identity_ids(item),
         )
 
-    async def delete_version(self, session: AppSession, rating_key: str, media_id: str) -> DeleteResult:
+    async def delete_version(
+        self,
+        session: AppSession,
+        rating_key: str,
+        media_id: str,
+        *,
+        server_id: str,
+        scan_id: str,
+        library_id: str,
+        confirmed_parts: list[PartInfo],
+        reviewed_identity: ExternalMediaId | None,
+    ) -> DeleteResult:
         if session.selected_server is None or session.selected_server_id is None:
             raise HTTPException(status_code=409, detail="Choose a Plex server before deleting a version.")
         if session.selected_server.allow_media_deletion is not True:
@@ -81,16 +92,16 @@ class DeletionService:
                 else "Plex did not confirm that media deletion is enabled. Nothing was deleted."
             )
             raise HTTPException(status_code=403, detail=detail)
+        scan = session.scan_progress
         snapshot = next(
-            (group for groups in session.duplicate_groups.values() for group in groups if group.rating_key == rating_key),
+            (group for group in session.duplicate_groups.get(library_id, []) if group.rating_key == rating_key),
             None,
         )
         if snapshot is None:
             snapshot = next(
                 (
                     entry
-                    for candidates in session.identity_candidates.values()
-                    for candidate in candidates
+                    for candidate in session.identity_candidates.get(library_id, [])
                     for entry in candidate.entries
                     if entry.rating_key == rating_key
                 ),
@@ -98,11 +109,20 @@ class DeletionService:
             )
         if snapshot is None:
             raise HTTPException(status_code=404, detail="This duplicate item is no longer in the current scan.")
-        identity_contexts = [
-            candidate
-            for candidate in session.identity_candidates.get(snapshot.library_id, [])
-            if any(entry.rating_key == rating_key for entry in candidate.entries)
-        ]
+        if (
+            server_id != session.selected_server_id
+            or scan is None
+            or scan.state != "complete"
+            or scan_id != scan.scan_id
+            or library_id != snapshot.library_id
+        ):
+            self._raise_stale_confirmation(snapshot)
+
+        if reviewed_identity is not None and not self._reviewed_candidate_exists(
+            session, library_id, rating_key, reviewed_identity
+        ):
+            self._raise_stale_confirmation(snapshot)
+
         baseline_parts = _part_identity(snapshot, media_id)
         if baseline_parts is None:
             raise HTTPException(status_code=404, detail="This media version is no longer in the current scan.")
@@ -112,6 +132,17 @@ class DeletionService:
                 status_code=409,
                 detail="Plex did not provide complete part IDs and paths for this version. Nothing was deleted; rescan before trying again.",
             )
+        confirmed_part_identity = tuple(
+            sorted(
+                ((part.part_id, part.file) for part in confirmed_parts if part.part_id and part.file),
+                key=lambda item: (item[0] or "", item[1] or ""),
+            )
+        )
+        if (
+            len(confirmed_part_identity) != len(confirmed_parts)
+            or confirmed_part_identity != baseline_parts
+        ):
+            self._raise_stale_confirmation(snapshot)
         library = next((item for item in session.libraries if item.library_id == snapshot.library_id), None)
         if library is None:
             raise HTTPException(status_code=404, detail="The Plex library is no longer available.")
@@ -120,9 +151,7 @@ class DeletionService:
         fresh_group = fresh_entry.group if fresh_entry else None
         identities = fresh_entry.identities if fresh_entry else ()
         fresh_parts = _part_identity(fresh_group, media_id) if fresh_group else None
-        identity_matches = not identity_contexts or any(
-            self._candidate_matches(candidate, identities) for candidate in identity_contexts
-        )
+        identity_matches = reviewed_identity is None or reviewed_identity in identities
         if fresh_parts is None or fresh_parts != baseline_parts or not identity_matches:
             self._replace_group(session, snapshot, fresh_group)
             self._replace_identity_candidates(session, rating_key, fresh_group, identities)
@@ -132,7 +161,7 @@ class DeletionService:
                 status_code=409,
                 detail={
                     "message": "Plex item changed since this scan. Nothing was deleted; review the refreshed versions.",
-                    "current_group": fresh_group.model_dump(mode="json") if fresh_group else None,
+                    "current_group": self._duplicate_group_payload(fresh_group),
                 },
             )
 
@@ -156,7 +185,7 @@ class DeletionService:
         if response.status_code == 404:
             raise HTTPException(status_code=409, detail="Plex no longer has this version. Refresh the library before choosing again.")
         if response.status_code >= 400:
-            raise HTTPException(status_code=response.status_code, detail=f"Plex could not delete this version (HTTP {response.status_code}).")
+            raise HTTPException(status_code=response.status_code, detail="Plex could not confirm deletion of this version. Run a new scan before choosing again.")
 
         refreshed_entry: _FreshEntry | None
         refresh_warning = False
@@ -178,9 +207,39 @@ class DeletionService:
             )
             library.duplicate_count = len(session.duplicate_groups.get(library.library_id, []))
             library.identity_candidate_count = len(session.identity_candidates.get(library.library_id, []))
-        if refreshed is not None and len(refreshed.media_versions) < 2 and not identity_contexts:
+        if refreshed is not None and len(refreshed.media_versions) < 2:
             refreshed = None
         return DeleteResult(deleted=True, group=refreshed, library=library, refresh_warning=refresh_warning)
+
+    @staticmethod
+    def _duplicate_group_payload(group: DuplicateGroup | None) -> dict[str, Any] | None:
+        if group is None or len(group.media_versions) < 2:
+            return None
+        return group.model_dump(mode="json")
+
+    @classmethod
+    def _raise_stale_confirmation(cls, snapshot: DuplicateGroup) -> None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "This confirmation no longer matches the current scan and file paths. Nothing was deleted; review the refreshed results.",
+                "current_group": cls._duplicate_group_payload(snapshot),
+            },
+        )
+
+    @staticmethod
+    def _reviewed_candidate_exists(
+        session: AppSession,
+        library_id: str,
+        rating_key: str,
+        identity: ExternalMediaId,
+    ) -> bool:
+        return any(
+            candidate.matched_provider == identity.provider
+            and candidate.matched_identifier == identity.identifier
+            and any(entry.rating_key == rating_key for entry in candidate.entries)
+            for candidate in session.identity_candidates.get(library_id, [])
+        )
 
     @staticmethod
     def _candidate_matches(

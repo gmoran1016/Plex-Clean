@@ -1,0 +1,12 @@
+.git/
+.superpowers/
+.venv/
+**/__pycache__/
+**/*.py[cod]
+**/node_modules/
+**/dist/
+/frontend/tsconfig.tsbuildinfo
+data/
+.env
+.env.*
+!.env.example

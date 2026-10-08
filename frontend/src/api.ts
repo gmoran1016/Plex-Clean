@@ -1,6 +1,7 @@
 import type {
   AuthStart,
   AuthStatus,
+  DeleteVersionConfirmation,
   DeleteResult,
   DuplicateGroup,
   IdentityCandidate,
@@ -58,7 +59,7 @@ async function request<T>(path: string, init: RequestInit = {}, csrfToken?: stri
       ? detail
       : typeof detail === "object" && detail !== null && "message" in detail
         ? String((detail as { message: unknown }).message)
-        : `Plex-Clean returned an error (${response.status}).`;
+        : "Plex-Clean could not complete this request. Refresh the page and check the current results before trying again.";
     throw new ApiError(message, response.status, detail, readRetryAfterSeconds(response));
   }
   return payload as T;
@@ -86,10 +87,10 @@ export const api = {
     const query = new URLSearchParams({ library_id: libraryId, offset: String(offset), limit: String(limit) });
     return request<IdentityCandidate[]>(`/api/identity-candidates?${query.toString()}`);
   },
-  deleteVersion: (ratingKey: string, mediaId: string, csrf: string) =>
+  deleteVersion: (ratingKey: string, mediaId: string, confirmation: DeleteVersionConfirmation, csrf: string) =>
     request<DeleteResult>(
       `/api/duplicates/${encodeURIComponent(ratingKey)}/media/${encodeURIComponent(mediaId)}/delete`,
-      { method: "POST" },
+      { method: "POST", body: JSON.stringify(confirmation) },
       csrf,
     ),
 };

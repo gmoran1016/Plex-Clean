@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-06
 
-**Status:** Design sections approved; written specification awaiting user review.
+**Status:** Approved; implemented with the approved separate-entry bulk-selection extension below.
 
 ## Goal
 
@@ -20,7 +20,7 @@ Build a self-hosted web app in Docker that signs in to Plex, lists duplicate mov
 
 ### Included
 
-- Plex PIN authentication using Plex's current JWK-backed JWT flow, with token refresh while a session is active.
+- Plex PIN authentication using Plex's JWK-backed device JWT flow and short Plex Link code. Require a new sign-in after 24 hours.
 - Discovery and selection of reachable Plex Media Servers associated with the signed-in account.
 - Scanning of all Movie and TV libraries on the selected server, with progress reporting and a manual rescan action.
 - A visual, library-grouped comparison of Plex items that have multiple media versions.
@@ -47,10 +47,10 @@ The app will not claim that two versions are byte-identical. It will not group t
 - **Frontend:** React and Vite. Build the frontend into static assets as part of a multi-stage Docker image.
 - **Backend:** FastAPI serves the static frontend and same-origin JSON API. It owns all Plex authentication, server requests, scan state, and delete operations.
 - **Deployment:** One Docker service/image and one backend process. A single process is required because active Plex sessions and scan jobs are held in memory.
-- **Persistence:** Keep an app-generated, non-secret Plex client identifier in a small `/config` volume so it remains stable across restarts. Do not persist user tokens, server access tokens, or private signing keys. After restart, the user signs in again.
-- **Secrets:** Store Plex user/server tokens and the JWK private key only in server memory, scoped to the browser session. Never place them in browser storage, frontend responses, or logs.
+- **Persistence:** Keep the stable Plex client identifier and Ed25519 device signing key in the `/config` volume so the JWK identity remains stable across restarts. Store the private key in a mode-0600 file. After restart, the user signs in again.
+- **Secrets:** Keep Plex user/server tokens only in server memory, scoped to the browser session. Never place tokens or the private key in browser storage, frontend responses, or logs. Treat the `/config` volume as sensitive because it contains the private signing key.
 - **Session:** Use a random opaque session cookie marked `HttpOnly` and `SameSite=Lax`; mark it `Secure` when HTTPS is used. Apply same-origin/CSRF protection to state-changing requests. Clear server-side token material on logout or session expiry.
-- **Network:** Prefer Plex-provided local/direct server connections when reachable. If no advertised connection works from Docker, show a clear network/configuration error and document an optional server URL override. Relay is a last resort and should be identified as such if used.
+- **Network:** Prefer Plex-provided local/direct server connections when reachable. If Plex returns no server resources, allow the optional configured server URL only after its identity and authenticated root are verified with the signed-in account token. If no connection works from Docker, show a clear network/configuration error. Relay is a last resort and should be identified as such if used.
 - **Media access:** No media directory is mounted into the app. All file deletion is requested from PMS using its media identifier.
 
 ## Authentication and server discovery
@@ -58,9 +58,9 @@ The app will not claim that two versions are byte-identical. It will not group t
 1. The browser starts sign-in through the app backend.
 2. The backend creates a Plex PIN using its stable client identifier and an Ed25519 public JWK, then gives the browser the Plex authorization URL.
 3. The browser completes authorization at Plex. The backend checks the PIN and obtains a JWT without returning it to the browser.
-4. The backend obtains the signed-in account's available Plex resources, including the connection URLs and server-specific access token.
+4. The backend obtains the signed-in account's available Plex resources and connection URLs. If a resource token is a JWT, request a legacy PMS token through Plex's device endpoint; verify the selected connection's identity and authenticated root before accepting it. If the client resource host returns an empty set, retry the canonical Plex host; if both have no server entry, verify the configured server URL directly and accept it only if its authenticated root succeeds.
 5. If multiple reachable servers are available, the UI asks the user to select one. Otherwise the sole reachable server is selected automatically.
-6. All subsequent Plex Media Server requests are made by the backend with the selected server access token. The backend refreshes the Plex JWT as required while the session and its private key remain active.
+6. All subsequent Plex Media Server requests are made by the backend with the selected server access token, or the signed-in account token for a verified configured-server fallback. The backend stops using the account token after 24 hours and requests a new sign-in.
 
 If sign-in expires or a Plex request reports an invalid token, stop the affected operation and request sign-in again. Do not log authentication headers or PIN secrets.
 
@@ -107,7 +107,7 @@ Disable deletion when the server reports it is unavailable. Handle PMS 401/403/4
 
 - Include `Dockerfile`, `compose.yaml`, `.dockerignore`, and a README with required network access, configuration, sign-in, scan, delete, logout, and restart behavior.
 - Expose the web UI/API on a configurable host port, defaulting to 8090.
-- Mount only `/config` for the non-secret client identifier. Do not require a Plex media path mount.
+- Mount `/config` for the client identifier and private device signing key. Do not require a Plex media path mount.
 - Run the container as a non-root user and include a lightweight health endpoint for Docker health reporting.
 - Document that public/WAN access should be provided through HTTPS; keep the default setup suitable for a trusted home network.
 - The delivery check is a Docker image build and configuration inspection. No test suite will be added or run unless the user requests testing or verification.
@@ -123,8 +123,19 @@ Disable deletion when the server reports it is unavailable. Handle PMS 401/403/4
 7. Users without server deletion permission receive an explanation and cannot accidentally submit an unreviewed or stale deletion.
 8. `docker compose up --build` builds and starts the app with the documented port and configuration.
 
+## Approved follow-up: separate-entry bulk selection (2026-10-07)
+
+This approved extension supersedes the earlier exclusion of bulk deletion above, while preserving an explicit review and confirmation for every batch.
+
+- In Separate Plex Entries mode, users can select individual media versions and request a library-wide safe selection.
+- Automatic selection keeps one unique best-quality copy in each candidate with clear edition metadata, comparable runtimes, known resolution, and an unambiguous quality winner by resolution then bitrate. It skips edition/runtime/quality conflicts, entries with multiple versions, incomplete target file identifiers, and candidates that overlap another external-ID group.
+- Before opening the confirmation, fetch and validate the complete current result set and reject any selection that would remove every media version from a matched candidate or Plex-version group.
+- The confirmation lists every selected title, matched external ID when applicable, technical details, and file path. On confirmation, issue the Plex delete requests sequentially, revalidate each exact scan/server/library/media/part/path and reviewed identity, and stop after the first stale result or error.
+- No media is deleted by selection alone; one final user confirmation is required for the batch.
+
 ## Source references
 
 - Plex Media Server API, including PIN/JWT authentication, server resources, media fields, and the single-media delete endpoint: <https://developer.plex.tv/pms/>
+- Plex API forum report describing PMS rejection of JWT resource tokens and the `/api/v2/devices` legacy-token route: <https://forums.plex.tv/t/question-on-https-clients-plex-tv-api-v2-resources-and-jwt-authentication/934478>
 - Plex duplicate/merged content guidance: <https://support.plex.tv/articles/202393718-how-do-i-find-duplicate-or-merged-content/>
 - Plex library view and deletion requirements: <https://support.plex.tv/articles/200392126-using-the-library-view/>

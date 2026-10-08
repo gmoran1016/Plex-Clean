@@ -299,7 +299,7 @@ class PlexLibraryService:
                     ScanError(
                         library_id=library.library_id,
                         library_title=library.title,
-                        message="Unexpected error while scanning this library.",
+                        message="Plex-Clean could not finish scanning this library. Check the Plex server connection and try again.",
                     )
                 )
             finally:

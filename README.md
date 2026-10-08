@@ -1,0 +1,64 @@
+# Plex-Clean
+
+A self-hosted Plex library review tool. Sign in to Plex to scan Movie and TV libraries, compare multiple media versions on one Plex item, and review separate Plex items with a shared IMDb, TMDb, or TVDb ID before requesting deletion through Plex.
+
+## Start with Docker Compose
+
+Requirements: Docker Engine with the Compose plugin, and network access from the container to `clients.plex.tv` and your Plex Media Server.
+
+```powershell
+docker compose up --build -d
+```
+
+Open [http://localhost:8090](http://localhost:8090). To use another host port, create a `.env` file beside `compose.yaml`:
+
+```dotenv
+HOST_PORT=8091
+```
+
+The app listens on the configured host port. The named `plex_clean_config` volume mounted at `/config` stores the stable Plex client identifier and the Ed25519 private signing key used for Plex's JWK-backed sign-in. Treat this volume as sensitive and retain it across container restarts.
+
+## Sign in and scan
+
+1. Select **Sign in with Plex**, then open Plex Link.
+2. Enter the short, one-time code shown by Plex-Clean. The app signs the PIN check with its device key, then discovers reachable Plex Media Servers.
+3. If more than one server is available, choose the server that contains the libraries to review.
+4. Select a Movie or TV library and start a scan. TV is scanned at episode level.
+5. Use **Same item** to compare the media versions Plex associates with one item, or **Separate items** to review distinct entries with a matching supported ID. Expand **Show file paths and stream details** to see Plex-reported paths and individual video, audio, and subtitle streams.
+
+In **Same item**, Plex-Clean shows one library item with multiple `Media` versions. In **Separate items**, it surfaces distinct entries with the same exact supported item ID. A shared ID is a review clue; it does not prove the files are identical or resolve every edition or cut difference. Plex-Clean does not hash files or match separate entries by title or filename. Runtime, edition, quality, size, container, codecs, streams, and paths are displayed when Plex provides them; missing values remain unavailable.
+
+## Review and deletion
+
+To review one version, expand its details, choose **Delete this version**, check the version information and every associated part path, then confirm. You can also select multiple versions or use **Auto-select versions for review** to prepare a batch. Auto-selection only marks versions when Plex's quality metadata supports a clear comparison; it skips edition or runtime differences, unclear quality ties, incomplete file details, and ambiguous separate-item matches. Selection alone never deletes media.
+
+Before opening batch confirmation, Plex-Clean reloads the complete current result set, checks that each selected version still exists, and requires at least one version to remain in each affected Plex item or matching-ID group. The confirmation lists every selected title, its media details, and all associated paths; matching IDs are shown when relevant. After confirmation, Plex-Clean sends deletion requests through Plex sequentially and rechecks the selected server, library, item, media version, and part paths. It stops at the first stale result or error and reports how many requests Plex accepted before stopping, so a batch can partially complete. It does not automatically retry a destructive request.
+
+Plex may require a server administrator account. Plex-Clean refreshes the affected results after accepted requests; use **Rescan libraries** if a follow-up read is unavailable. The app has no media-volume mount, does not delete files directly, and cannot independently verify storage after Plex responds.
+
+## Network configuration
+
+Plex-Clean tries reachable server connections advertised by Plex, preferring local/direct connections. If Plex returns no server resources, or the container cannot reach an advertised address, set the URL reachable from Docker in `.env` and restart:
+
+```dotenv
+PLEX_SERVER_URL=http://192.168.1.20:32400
+```
+
+Use the address and port reachable from the container, not necessarily the URL used by a browser on the host. If Plex returns no server resources, the app probes this server's identity and authenticated root before accepting it. The override does not publish or mount media directories.
+
+## Session and access
+
+- Plex account/server tokens, scan state, and duplicate results stay in app memory. The app stops using the account token after 24 hours; tokens are not stored in browser storage or on disk.
+- Restarting the container clears sessions and requires Plex sign-in again. The `/config` volume preserves the client identifier and private signing key; the key is stored as a mode-0600 file inside the container.
+- The session cookie is `HttpOnly` and `SameSite=Lax`. For HTTPS behind a trusted reverse proxy, set `SESSION_COOKIE_SECURE=true` in `.env`.
+- Keep the default HTTP endpoint on a trusted home network. Do not expose it directly to the public internet; use HTTPS and restrict access at the reverse proxy/firewall.
+- The container runs as a non-root user with dropped Linux capabilities. It has no media-volume mount.
+
+## Useful commands
+
+```powershell
+docker compose logs -f plex-clean
+docker compose down
+```
+
+`docker compose down` leaves the named config volume in place. To remove it, use `docker compose down --volumes`; this removes the client identifier and signing key and is not needed for normal sign-out or restart.

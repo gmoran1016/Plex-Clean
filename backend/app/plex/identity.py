@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import re
 from typing import Any, Sequence
 from urllib.parse import urlsplit
 
@@ -10,6 +11,9 @@ from app.models import DuplicateGroup, ExternalMediaId, IdentityCandidate, Libra
 
 _SUPPORTED_PROVIDERS = {"imdb", "tmdb", "tvdb"}
 _PROVIDER_PRIORITY = {"imdb": 0, "tmdb": 1, "tvdb": 2}
+_IMDB_ID = re.compile(r"tt([0-9]+)", re.IGNORECASE)
+_NUMERIC_ID = re.compile(r"[0-9]+")
+_CATEGORIZED_NUMERIC_ID = re.compile(r"(movie|tv|show|series|episode)/([0-9]+)", re.IGNORECASE)
 
 
 def _external_identifier(value: Any) -> ExternalMediaId | None:
@@ -38,6 +42,24 @@ def _external_identifier(value: Any) -> ExternalMediaId | None:
     identifier = identifier.strip("/")
     if not identifier:
         return None
+
+    if provider == "imdb":
+        match = _IMDB_ID.fullmatch(identifier)
+        if match is None or int(match.group(1)) == 0:
+            return None
+        identifier = f"tt{match.group(1)}"
+    else:
+        numeric = _NUMERIC_ID.fullmatch(identifier)
+        categorized = _CATEGORIZED_NUMERIC_ID.fullmatch(identifier)
+        if numeric is not None:
+            if int(numeric.group(0)) == 0:
+                return None
+        elif categorized is not None:
+            if int(categorized.group(2)) == 0:
+                return None
+            identifier = f"{categorized.group(1).lower()}/{categorized.group(2)}"
+        else:
+            return None
     return ExternalMediaId(provider=provider, identifier=identifier)
 
 

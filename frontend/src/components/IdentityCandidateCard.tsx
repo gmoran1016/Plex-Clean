@@ -1,11 +1,13 @@
-import type { DuplicateGroup, IdentityCandidate, MediaVersion } from "../types";
+import type { DuplicateGroup, ExternalMediaId, IdentityCandidate, MediaVersion } from "../types";
 import VersionCard from "./VersionCard";
 
 type Props = {
   candidate: IdentityCandidate;
   deletionDisabled: boolean;
   deletionBlockedReason: string | null;
-  onDelete: (group: DuplicateGroup, version: MediaVersion) => void;
+  onDelete: (group: DuplicateGroup, version: MediaVersion, reviewedIdentity: ExternalMediaId) => void;
+  isSelected: (group: DuplicateGroup, version: MediaVersion) => boolean;
+  onToggleSelection: (group: DuplicateGroup, version: MediaVersion, reviewedIdentity: ExternalMediaId, selected: boolean) => void;
 };
 
 const providerName = { imdb: "IMDb", tmdb: "TMDb", tvdb: "TVDb" } as const;
@@ -22,12 +24,12 @@ function editionSummary(candidate: IdentityCandidate) {
   }
   const labels = [...labelsByNormalizedValue.values()];
   if (candidate.edition_review === "conflict") {
-    return `Edition conflict · ${labels.join(" / ")} · review only`;
+    return `Different editions are listed · ${labels.join(" / ")} · review before deleting`;
   }
   if (candidate.edition_review === "unknown") {
-    return `Edition metadata is incomplete · ${labels.join(" / ")} · review only`;
+    return `Plex has incomplete edition details · ${labels.join(" / ")} · review before deleting`;
   }
-  return labels.length ? `Edition labels agree · ${labels.join(" / ")}` : "No edition conflict detected";
+  return labels.length ? `Plex shows matching edition details · ${labels.join(" / ")}` : "Plex shows no edition conflict";
 }
 
 function entryContext(group: DuplicateGroup) {
@@ -36,15 +38,19 @@ function entryContext(group: DuplicateGroup) {
   return group.parent_title ? `${group.parent_title} · ${episode}` : episode;
 }
 
-export default function IdentityCandidateCard({ candidate, deletionDisabled, deletionBlockedReason, onDelete }: Props) {
+export default function IdentityCandidateCard({ candidate, deletionDisabled, deletionBlockedReason, onDelete, isSelected, onToggleSelection }: Props) {
   const editionClass = candidate.edition_review === "clear" ? "is-clear" : "is-review";
+  const reviewedIdentity: ExternalMediaId = {
+    provider: candidate.matched_provider,
+    identifier: candidate.matched_identifier,
+  };
   return (
     <article className="identity-candidate">
       <header className="identity-candidate-heading">
         <div>
-          <p className="identity-eyebrow">Shared {providerName[candidate.matched_provider]} identifier</p>
-          <h2>{candidate.entries.length} separate Plex entries</h2>
-          <p className="identity-match-copy">A metadata ID match groups these records for review. It does not prove that the media files are identical.</p>
+          <p className="identity-eyebrow">Matching {providerName[candidate.matched_provider]} ID</p>
+          <h2>{candidate.entries.length} separate Plex items</h2>
+          <p className="identity-match-copy">These Plex items have the same {providerName[candidate.matched_provider]} ID. Review their versions and edition details; the match does not prove the media files are identical.</p>
         </div>
         <code className="identity-id">{providerName[candidate.matched_provider]} · {candidate.matched_identifier}</code>
       </header>
@@ -59,7 +65,7 @@ export default function IdentityCandidateCard({ candidate, deletionDisabled, del
                 ? <img className="poster" src={group.poster_url} alt={`Poster for ${group.title}`} loading="lazy" />
                 : <div className="poster poster-empty" aria-hidden="true">P</div>}
               <div className="identity-entry-title">
-                <p>Plex entry · {group.rating_key}</p>
+                <p>Plex item ID · {group.rating_key}</p>
                 <h3>{group.title}</h3>
                 <span>{entryContext(group)}</span>
               </div>
@@ -71,10 +77,9 @@ export default function IdentityCandidateCard({ candidate, deletionDisabled, del
                   deletionDisabled={deletionDisabled}
                   index={index}
                   key={version.media_id ?? `media-${index}`}
-                  onDelete={() => onDelete(group, version)}
-                  onToggleSelection={() => undefined}
-                  selected={false}
-                  showBulkSelection={false}
+                  onDelete={() => onDelete(group, version, reviewedIdentity)}
+                  onToggleSelection={(selected) => onToggleSelection(group, version, reviewedIdentity, selected)}
+                  selected={isSelected(group, version)}
                   version={version}
                 />
               ))}

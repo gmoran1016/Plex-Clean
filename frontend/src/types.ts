@@ -14,6 +14,14 @@ export type ExternalMediaId = {
   identifier: string;
 };
 
+export type DeleteVersionConfirmation = {
+  server_id: string;
+  scan_id: string;
+  library_id: string;
+  confirmed_parts: { part_id: string; file: string }[];
+  reviewed_identity: ExternalMediaId | null;
+};
+
 export type ServerOption = {
   machine_identifier: string;
   name: string;

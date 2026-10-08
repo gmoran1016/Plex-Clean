@@ -8,7 +8,7 @@ type Props = {
 
 export default function LibrarySidebar({ libraries, selectedId, onSelect }: Props) {
   if (!libraries.length) {
-    return <aside className="library-rail"><p className="rail-empty">No movie or TV libraries were found.</p></aside>;
+    return <aside className="library-rail"><p className="rail-empty">No Movie or TV libraries are available on this server.</p></aside>;
   }
 
   return (
@@ -26,7 +26,7 @@ export default function LibrarySidebar({ libraries, selectedId, onSelect }: Prop
             <span className="library-kind">{library.type === "movie" ? "MOVIE" : "TV"}</span>
             <span className="library-copy">
               <span className="library-title">{library.title}</span>
-                <span className="library-count">{library.duplicate_count.toLocaleString()} version groups · {library.identity_candidate_count.toLocaleString()} shared-ID candidates</span>
+                <span className="library-count">{library.duplicate_count.toLocaleString()} items with multiple versions · {library.identity_candidate_count.toLocaleString()} matching-ID groups</span>
             </span>
           </button>
         ))}

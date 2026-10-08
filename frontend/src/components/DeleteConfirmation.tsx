@@ -19,6 +19,8 @@ function display(value: string | number | null | undefined) {
   return value === null || value === undefined || value === "" ? "Unavailable" : String(value);
 }
 
+const externalIdProviderName = { imdb: "IMDb", tmdb: "TMDb", tvdb: "TVDb" } as const;
+
 export default function DeleteConfirmation({
   group,
   version,
@@ -45,6 +47,7 @@ export default function DeleteConfirmation({
 
   const singleIndex = singleMode && group && version ? group.media_versions.indexOf(version) : -1;
   const bulkCount = bulkItems?.length ?? 0;
+  const bulkVersionLabel = bulkCount === 1 ? "version" : "versions";
   const affectedTitles = new Set(bulkItems?.map((item) => item.group.rating_key) ?? []);
 
   return (
@@ -55,20 +58,20 @@ export default function DeleteConfirmation({
       ref={dialogRef}
     >
       <div className="dialog-content">
-        <button aria-label="Close confirmation" className="dialog-close" disabled={pending} onClick={onCancel} type="button">×</button>
+        <button aria-label="Close deletion review" className="dialog-close" disabled={pending} onClick={onCancel} type="button">×</button>
         {bulkMode ? (
           <>
-            <h2 id="delete-dialog-title">Delete {bulkCount} selected versions?</h2>
+            <h2 id="delete-dialog-title">Delete {bulkCount} selected {bulkVersionLabel}?</h2>
             <p className="dialog-lede">
-              Plex will delete every listed source file across {affectedTitles.size} {affectedTitles.size === 1 ? "item" : "items"}. Review the paths before continuing.
+              Plex will delete every listed file across {affectedTitles.size} {affectedTitles.size === 1 ? "Plex item" : "Plex items"}. Check the paths before continuing.
             </p>
             {pending && (
               <div className="bulk-progress" role="status">
                 <progress max={bulkCount} value={progress} />
-                <span>Deleting {progress} of {bulkCount} versions…</span>
+                <span>Deleting {progress} of {bulkCount} {bulkVersionLabel}…</span>
               </div>
             )}
-            <ol className="bulk-confirmation-list" aria-label="Selected versions and affected files">
+            <ol className="bulk-confirmation-list" aria-label="Selected versions and their files">
               {bulkItems!.map((item) => (
                 <li key={item.key}>
                   <h3>{item.group.title}{item.group.year ? ` (${item.group.year})` : ""}</h3>
@@ -86,10 +89,11 @@ export default function DeleteConfirmation({
                     <div><dt>Audio</dt><dd>{item.version.audio_channels ? `${display(item.version.audio_codec)} · ${item.version.audio_channels} ch` : display(item.version.audio_codec)}</dd></div>
                     <div><dt>Bitrate</dt><dd>{item.version.bitrate_kbps ? `${item.version.bitrate_kbps.toLocaleString()} kb/s` : "Unavailable"}</dd></div>
                     <div><dt>Edition</dt><dd>{item.version.edition_title || "Unavailable"}</dd></div>
-                    <div><dt>Selected because</dt><dd>{item.reason}</dd></div>
+                    {item.reviewedIdentity && <div><dt>Matched ID</dt><dd>{externalIdProviderName[item.reviewedIdentity.provider]} · {item.reviewedIdentity.identifier}</dd></div>}
+                    <div><dt>Why selected</dt><dd>{item.reason}</dd></div>
                   </dl>
                   <div className="bulk-file-list">
-                    <strong>Files Plex will remove</strong>
+                    <strong>Files Plex will delete</strong>
                     <ul>
                       {item.version.parts.map((part, index) => (
                         <li key={`${part.part_id ?? "part"}-${index}`}><code>{part.file || "Path unavailable"}</code></li>
@@ -103,7 +107,7 @@ export default function DeleteConfirmation({
         ) : (
           <>
             <h2 id="delete-dialog-title">Delete this version?</h2>
-            <p className="dialog-lede">Plex will delete the source media files for this version.</p>
+            <p className="dialog-lede">Plex will delete the files listed for this version.</p>
             <section className="selected-version" aria-label="Selected version details">
               {group!.poster_url ? <img src={group!.poster_url} alt="" /> : <div className="dialog-poster-empty" aria-hidden="true">P</div>}
               <div>
@@ -123,13 +127,13 @@ export default function DeleteConfirmation({
               </div>
             </section>
             <section className="affected-files">
-              <h3>Files included in this version</h3>
+              <h3>Files Plex will delete</h3>
               {version!.parts.length ? (
                 <ul>
                   {version!.parts.map((part, partIndex) => <li key={`${part.part_id ?? "part"}-${partIndex}`}><code>{part.file || "Path unavailable"}</code></li>)}
                 </ul>
-              ) : <p>File paths unavailable in Plex.</p>}
-              {version!.parts.length > 1 && <p className="multi-part-note">This version contains {version!.parts.length} parts. Plex will remove all listed parts.</p>}
+              ) : <p>Plex did not provide file paths for this version.</p>}
+              {version!.parts.length > 1 && <p className="multi-part-note">Plex lists {version!.parts.length} files for this version. All listed files will be deleted.</p>}
             </section>
           </>
         )}
@@ -137,12 +141,12 @@ export default function DeleteConfirmation({
         {error && <p className="dialog-error" role="alert">{error}</p>}
         <div className="dialog-actions">
           <button className="button button-secondary" disabled={pending} onClick={onCancel} type="button">
-            {completed ? "Close review" : bulkMode ? "Cancel batch" : "Keep version"}
+            {completed ? "Close review" : bulkMode ? "Back to selection" : "Keep version"}
           </button>
           <button className="button button-danger" disabled={pending || completed} onClick={onConfirm} type="button">
             {pending
               ? bulkMode ? `Deleting ${progress} / ${bulkCount}…` : "Deleting…"
-              : completed ? "Batch stopped" : bulkMode ? `Delete ${bulkCount} versions` : "Delete version"}
+              : completed ? "Deletion stopped" : bulkMode ? `Delete ${bulkCount} ${bulkVersionLabel}` : "Delete version"}
           </button>
         </div>
       </div>
