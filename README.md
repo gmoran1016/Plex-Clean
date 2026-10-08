@@ -25,7 +25,9 @@ The container image is published to `ghcr.io/gmoran1016/plex-clean:latest`. In U
 - **Network Type:** `Bridge`
 - **Port:** host `8090` to container `8000` over TCP
 - **Path:** `/mnt/user/appdata/plex-clean` to `/config` (read/write)
-- **Restart policy:** `unless-stopped`
+- **Extra Parameters:** `--user=99:100 --restart=unless-stopped --security-opt=no-new-privileges:true --cap-drop=ALL`
+
+The config folder should be owned by Unraid's `nobody` user and kept private; UID/GID `99:100` matches that folder while keeping the container non-root.
 
 Do not add a Plex media path. Plex-Clean reviews metadata and submits confirmed deletion requests through Plex; it does not need direct access to media files. Keep the web interface on a trusted home network, or protect it with HTTPS and access controls before routing it through a reverse proxy.
 
