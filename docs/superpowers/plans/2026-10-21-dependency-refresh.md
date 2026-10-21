@@ -50,5 +50,5 @@
 
 **Files:** all changes above
 
-- [ ] Commit only the dependency refresh, push `master`, and identify the workflow run for that commit.
-- [ ] Wait for the GitHub Actions build-and-publish workflow to finish successfully.
+- [x] Commit only the dependency refresh, push `master`, and identify the workflow run for that commit.
+- [x] Wait for the GitHub Actions build-and-publish workflow to finish successfully.
