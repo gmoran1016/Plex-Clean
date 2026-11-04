@@ -223,8 +223,8 @@ class PlexAuthService:
     async def start_pin(self, session: AppSession) -> AuthStart:
         response = await self._request(
             "POST",
-            f"{PLEX_TV_API}/pins",
-            params={"strong": "true"},
+            f"{PLEX_API}/pins",
+            json={"jwk": self._device_jwk(), "strong": True},
         )
         payload = _json_or_xml(response)
         try:
@@ -295,7 +295,8 @@ class PlexAuthService:
             try:
                 response = await self._request(
                     "GET",
-                    f"{PLEX_TV_API}/pins/{pending.pin_id}",
+                    f"{PLEX_API}/pins/{pending.pin_id}",
+                    params={"deviceJWT": self._signed_device_jwt()},
                 )
             except HTTPException as exc:
                 if exc.status_code == 429:
