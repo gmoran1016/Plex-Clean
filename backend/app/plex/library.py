@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+from collections import defaultdict
 from typing import Any
 from urllib.parse import quote
 
@@ -148,6 +149,30 @@ def normalize_group_item(
     return group
 
 
+def mark_shared_episode_files(groups: list[DuplicateGroup]) -> None:
+    """Mark TV media versions whose file path is linked to another episode item."""
+    path_owners: dict[str, set[str]] = defaultdict(set)
+    for group in groups:
+        if group.library_type != "show":
+            continue
+        for version in group.media_versions:
+            for part in version.parts:
+                if part.file:
+                    path_owners[part.file.replace("\\", "/").rstrip("/").casefold()].add(group.rating_key)
+
+    for group in groups:
+        if group.library_type != "show":
+            continue
+        for version in group.media_versions:
+            owner_keys = {
+                owner
+                for part in version.parts
+                if part.file
+                for owner in path_owners[part.file.replace("\\", "/").rstrip("/").casefold()]
+            }
+            version.shared_episode_count = max(0, len(owner_keys) - 1)
+
+
 class PlexLibraryService:
     def __init__(self, client: PlexClient | None = None) -> None:
         self.client = client or PlexClient()
@@ -227,6 +252,7 @@ class PlexLibraryService:
             progress.current_library_id = library.library_id
             progress.current_library_title = library.title
             groups: list[DuplicateGroup] = []
+            library_items: list[DuplicateGroup] = []
             identity_entries: list[tuple[DuplicateGroup, tuple[ExternalMediaId, ...]]] = []
             item_count = 0
             missing_identity_id_count = 0
@@ -260,6 +286,7 @@ class PlexLibraryService:
                         normalized = normalize_media_item(item, library, session)
                         if normalized is None:
                             continue
+                        library_items.append(normalized)
                         if len(normalized.media_versions) >= 2:
                             groups.append(normalized)
                         if identities:
@@ -270,6 +297,7 @@ class PlexLibraryService:
                     total = _integer(container.get("totalSize"))
                     if len(items) < PAGE_SIZE or (total is not None and offset >= total):
                         break
+                mark_shared_episode_files(library_items)
                 candidates = build_identity_candidates(identity_entries, library)
                 session.duplicate_groups[library.library_id] = groups
                 session.identity_candidates[library.library_id] = candidates

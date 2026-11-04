@@ -108,3 +108,19 @@ test("still selects a clearly lower-resolution version", () => {
   assert.deepEqual(result.selected.map((item) => item.version.media_id), ["lower"]);
   assert.match(result.selected[0].reason, /lower resolution/i);
 });
+
+test("does not preselect a version whose file is shared with another episode", () => {
+  const best = version("best");
+  const sharedLower = version("shared-lower", {
+    width: 1280,
+    height: 720,
+    bitrate_kbps: 3_000,
+    file_size_bytes: 5_000_000,
+    shared_episode_count: 1,
+  });
+
+  const result = analyzeLowerQualityVersions(group([best, sharedLower]));
+
+  assert.deepEqual(result.selected, []);
+  assert.equal(result.skippedVersions, 1);
+});

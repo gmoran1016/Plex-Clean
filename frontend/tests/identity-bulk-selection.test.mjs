@@ -7,7 +7,7 @@ import {
   findDuplicateGroupsWithoutSurvivors,
 } from "../src/identityBulkSelection.ts";
 
-function version(id, width, height, bitrate, duration = 7_200_000) {
+function version(id, width, height, bitrate, duration = 7_200_000, overrides = {}) {
   return {
     media_id: id,
     edition_title: null,
@@ -22,6 +22,7 @@ function version(id, width, height, bitrate, duration = 7_200_000) {
     file_size_bytes: 1_000_000,
     parts: [{ part_id: `part-${id}`, file: `/${id}.mkv`, size_bytes: 1_000_000, container: "mkv" }],
     streams: [],
+    ...overrides,
   };
 }
 
@@ -89,6 +90,18 @@ test("skips candidate groups with edition, runtime, or quality ambiguity", () =>
 
   assert.deepEqual(result.selected, []);
   assert.equal(result.skippedCandidates, 3);
+});
+
+test("does not preselect a separate episode entry whose file is shared", () => {
+  const group = candidate([
+    entry("shared-low", version("shared-low-media", 1280, 720, 3_000, 7_200_000, { shared_episode_count: 1 })),
+    entry("best", version("best-media", 1920, 1080, 8_000)),
+  ], { library_type: "show" });
+
+  const result = analyzeSafeIdentityDuplicates([group]);
+
+  assert.deepEqual(result.selected, []);
+  assert.equal(result.skippedVersions, 1);
 });
 
 test("skips tied best quality and overlapping external-ID candidates", () => {

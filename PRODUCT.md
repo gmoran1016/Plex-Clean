@@ -31,6 +31,7 @@ Plex-Clean uses Plex's own multiple-version records to identify versions attache
 - Plex PIN sign-in, reachable server selection, library scans with progress, duplicate-version comparison, and separate-entry candidate review using exact supported item IDs.
 - Comparison details include Plex-provided title and episode context, edition, runtime, resolution, bitrate, size, container, codecs, streams, and paths when available. Missing values remain unknown.
 - A user can request deletion of one reviewed version through Plex. Separate-entry candidates also support individual selections and a constrained safe-selection batch; the complete batch is reviewed and confirmed before sequential deletion. Selection alone never deletes media.
+- In TV libraries, Plex-Clean identifies media paths referenced by multiple episode entries, explains the shared-file risk, and disables deletion for those paths so a combined episode file is not removed accidentally.
 - Before deletion, Plex-Clean rechecks the selected server, library, item, media identifiers, and associated parts and paths. It stops on stale data or an error and does not automatically retry a destructive request.
 - Plex-Clean does not mount or access media directories, hash files, or match distinct entries by title or filename. It cannot independently verify storage after Plex responds.
 - Plex account and server tokens remain in server memory and expire from use after 24 hours. The `/config` volume retains the client identifier and device signing key; neither secret is sent to browser storage or logs.

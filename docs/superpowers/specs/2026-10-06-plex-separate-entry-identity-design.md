@@ -80,6 +80,12 @@ Add a distinct review mode that finds likely duplicate Movies or TV episodes rep
 7. The UI explains missing-ID counts and shows available metadata without guessing absent values.
 8. No media-directory mount, token persistence, candidate-wide deletion, or automatic deletion is introduced.
 
+## Follow-up: episode copy deletion and shared files (2026-11-04)
+
+- Make the individual delete action visible for separate episode entries that share an episode ID. A single-version episode entry is labeled as an episode copy and still requires review of its paths and explicit confirmation.
+- During the existing library scan, detect TV media paths referenced by more than one episode entry. Explain the shared-file risk and disable both individual and bulk deletion for those versions.
+- Enforce the shared-file deletion block on the backend as well as in the UI. Never group episodes by a shared path; keep identity matching based on supported episode-level IDs.
+
 ## Source references
 
 - Plex Media Server API: https://developer.plex.tv/pms/

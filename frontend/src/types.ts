@@ -74,6 +74,7 @@ export type MediaVersion = {
   file_size_bytes: number | null;
   parts: PartInfo[];
   streams: StreamInfo[];
+  shared_episode_count: number;
 };
 
 export type DuplicateGroup = {

@@ -40,6 +40,7 @@ function entryContext(group: DuplicateGroup) {
 
 export default function IdentityCandidateCard({ candidate, deletionDisabled, deletionBlockedReason, onDelete, isSelected, onToggleSelection }: Props) {
   const editionClass = candidate.edition_review === "clear" ? "is-clear" : "is-review";
+  const episodeCandidate = candidate.library_type === "show";
   const reviewedIdentity: ExternalMediaId = {
     provider: candidate.matched_provider,
     identifier: candidate.matched_identifier,
@@ -48,9 +49,13 @@ export default function IdentityCandidateCard({ candidate, deletionDisabled, del
     <article className="identity-candidate">
       <header className="identity-candidate-heading">
         <div>
-          <p className="identity-eyebrow">Matching {providerName[candidate.matched_provider]} ID</p>
+          <p className="identity-eyebrow">{episodeCandidate ? "Matching episode ID" : `Matching ${providerName[candidate.matched_provider]} ID`}</p>
           <h2>{candidate.entries.length} separate Plex items</h2>
-          <p className="identity-match-copy">These Plex items have the same {providerName[candidate.matched_provider]} ID. Review their versions and edition details; the match does not prove the media files are identical.</p>
+          <p className="identity-match-copy">
+            {episodeCandidate
+              ? "These Plex items share the same episode ID. Compare each copy and its file paths, then choose one to delete. Plex-Clean asks you to confirm first; a shared ID does not prove the files are byte-for-byte identical."
+              : `These Plex items have the same ${providerName[candidate.matched_provider]} ID. Review their versions and edition details; the match does not prove the media files are identical.`}
+          </p>
         </div>
         <code className="identity-id">{providerName[candidate.matched_provider]} · {candidate.matched_identifier}</code>
       </header>
@@ -80,6 +85,7 @@ export default function IdentityCandidateCard({ candidate, deletionDisabled, del
                   onDelete={() => onDelete(group, version, reviewedIdentity)}
                   onToggleSelection={(selected) => onToggleSelection(group, version, reviewedIdentity, selected)}
                   selected={isSelected(group, version)}
+                  deleteLabel={episodeCandidate && group.media_versions.length === 1 ? "Delete this episode copy" : "Delete this version"}
                   version={version}
                 />
               ))}

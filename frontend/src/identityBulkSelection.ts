@@ -11,6 +11,7 @@ function dimensions(version: MediaVersion): Dimensions | null {
 
 function hasIdentifiableParts(version: MediaVersion) {
   return Boolean(version.media_id)
+    && !(version.shared_episode_count > 0)
     && version.parts.length > 0
     && version.parts.every((part) => Boolean(part.part_id && part.file));
 }

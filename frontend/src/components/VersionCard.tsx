@@ -35,6 +35,7 @@ type Props = {
   selected: boolean;
   onToggleSelection: (selected: boolean) => void;
   onDelete: () => void;
+  deleteLabel?: string;
   showBulkSelection?: boolean;
 };
 
@@ -42,9 +43,10 @@ function display(value: string | number | null | undefined) {
   return value === null || value === undefined || value === "" ? "Unavailable" : String(value);
 }
 
-export default function VersionCard({ version, index, deletionDisabled, selected, onToggleSelection, onDelete, showBulkSelection = true }: Props) {
+export default function VersionCard({ version, index, deletionDisabled, selected, onToggleSelection, onDelete, deleteLabel = "Delete this version", showBulkSelection = true }: Props) {
   const partsAreIdentifiable = version.parts.length > 0 && version.parts.every((part) => Boolean(part.part_id && part.file));
-  const deleteDisabled = deletionDisabled || !version.media_id || !partsAreIdentifiable;
+  const sharedEpisodeFile = version.shared_episode_count > 0;
+  const deleteDisabled = deletionDisabled || !version.media_id || !partsAreIdentifiable || sharedEpisodeFile;
   return (
     <section className="version-column" aria-label={`Version ${index + 1}`}>
       <div className="version-heading">
@@ -87,12 +89,17 @@ export default function VersionCard({ version, index, deletionDisabled, selected
             <h4>Streams</h4>
             <StreamDetails streams={version.streams} />
           </div>
-          <button className="button button-danger-outline" disabled={deleteDisabled} onClick={onDelete} type="button">
-            Delete this version
-          </button>
-          {(!version.media_id || !partsAreIdentifiable) && <p className="delete-note">Plex did not provide all the media details needed to delete this version. Try a new scan.</p>}
         </div>
       </details>
+      <button className="button button-danger-outline" disabled={deleteDisabled} onClick={onDelete} type="button">
+        {deleteLabel}
+      </button>
+      {(!version.media_id || !partsAreIdentifiable) && <p className="delete-note">Plex did not provide all the media details needed to delete this version. Try a new scan.</p>}
+      {sharedEpisodeFile && (
+        <p className="delete-note" role="status">
+          Plex links this file to {version.shared_episode_count} other {version.shared_episode_count === 1 ? "episode" : "episodes"}. Deletion is disabled because Plex may remove all episodes in the shared file.
+        </p>
+      )}
     </section>
   );
 }

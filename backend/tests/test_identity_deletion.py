@@ -148,6 +148,24 @@ def confirmation(
 
 
 class IdentityDeletionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shared_episode_file_is_rejected_without_plex_delete(self) -> None:
+        selected = version("a-media", "part-a", "/a.mkv")
+        selected.shared_episode_count = 1
+        snapshot = group("a", [selected]).model_copy(update={"library_type": "show"})
+        session = session_for(duplicate_groups=[snapshot])
+        client = FakePlexClient([fresh_item("a", (), [plex_media("a-media", "part-a", "/a.mkv")])])
+
+        with self.assertRaises(HTTPException) as raised:
+            await DeletionService(client).delete_version(
+                session,
+                "a",
+                "a-media",
+                **confirmation(snapshot, "a-media"),  # type: ignore[arg-type]
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertFalse(any(method == "DELETE" for method, *_ in client.calls))
+
     async def test_delete_route_rejects_a_stale_confirmation_body_without_plex_delete(self) -> None:
         old = group("a", [version("a-media", "part-old", "/old.mkv")])
         current = group("a", [version("a-media", "part-new", "/new.mkv")])

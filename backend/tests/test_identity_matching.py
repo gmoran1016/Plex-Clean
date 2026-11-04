@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-from app.models import DuplicateGroup, LibrarySummary, MediaVersion
+from app.models import DuplicateGroup, LibrarySummary, MediaVersion, PartInfo
 from app.plex.identity import ExternalMediaId, build_identity_candidates, external_identity_ids
+from app.plex.library import mark_shared_episode_files
 
 
 class ExternalIdentityIdTests(unittest.TestCase):
@@ -79,6 +80,20 @@ def entry(
 
 
 class CandidateGroupingTests(unittest.TestCase):
+    def test_shared_episode_file_paths_are_marked_across_entries(self) -> None:
+        first = entry("e1", library_id="shows", library_type="show")
+        second = entry("e2", library_id="shows", library_type="show")
+        unrelated = entry("e3", library_id="shows", library_type="show")
+        first.media_versions[0].parts = [PartInfo(part_id="p1", file="/TV/Show/Block.mkv")]
+        second.media_versions[0].parts = [PartInfo(part_id="p2", file="\\TV\\Show\\Block.mkv")]
+        unrelated.media_versions[0].parts = [PartInfo(part_id="p3", file="/TV/Show/Episode3.mkv")]
+
+        mark_shared_episode_files([first, second, unrelated])
+
+        self.assertEqual(first.media_versions[0].shared_episode_count, 1)
+        self.assertEqual(second.media_versions[0].shared_episode_count, 1)
+        self.assertEqual(unrelated.media_versions[0].shared_episode_count, 0)
+
     def test_movie_entries_group_only_on_a_shared_external_id(self) -> None:
         library = movie_library()
         imdb = ExternalMediaId(provider="imdb", identifier="tt123")

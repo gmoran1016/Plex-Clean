@@ -165,6 +165,15 @@ class DeletionService:
                 },
             )
 
+        if snapshot.library_type == "show" and selected_snapshot.shared_episode_count > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This file is also linked to other episode entries. Nothing was deleted because "
+                    "Plex may remove every episode in the shared file."
+                ),
+            )
+
         try:
             response = await self.client.request(
                 "DELETE",

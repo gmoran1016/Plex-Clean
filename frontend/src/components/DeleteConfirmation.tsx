@@ -49,6 +49,7 @@ export default function DeleteConfirmation({
   const bulkCount = bulkItems?.length ?? 0;
   const bulkVersionLabel = bulkCount === 1 ? "version" : "versions";
   const affectedTitles = new Set(bulkItems?.map((item) => item.group.rating_key) ?? []);
+  const deletingEpisodeCopy = singleMode && group!.library_type === "show" && group!.media_versions.length === 1;
 
   return (
     <dialog
@@ -106,8 +107,8 @@ export default function DeleteConfirmation({
           </>
         ) : (
           <>
-            <h2 id="delete-dialog-title">Delete this version?</h2>
-            <p className="dialog-lede">Plex will delete the files listed for this version.</p>
+            <h2 id="delete-dialog-title">{deletingEpisodeCopy ? "Delete this episode copy?" : "Delete this version?"}</h2>
+            <p className="dialog-lede">Plex will delete the files listed for this {deletingEpisodeCopy ? "episode copy" : "version"}.</p>
             <section className="selected-version" aria-label="Selected version details">
               {group!.poster_url ? <img src={group!.poster_url} alt="" /> : <div className="dialog-poster-empty" aria-hidden="true">P</div>}
               <div>
@@ -141,12 +142,12 @@ export default function DeleteConfirmation({
         {error && <p className="dialog-error" role="alert">{error}</p>}
         <div className="dialog-actions">
           <button className="button button-secondary" disabled={pending} onClick={onCancel} type="button">
-            {completed ? "Close review" : bulkMode ? "Back to selection" : "Keep version"}
+            {completed ? "Close review" : bulkMode ? "Back to selection" : deletingEpisodeCopy ? "Keep episode copy" : "Keep version"}
           </button>
           <button className="button button-danger" disabled={pending || completed} onClick={onConfirm} type="button">
             {pending
               ? bulkMode ? `Deleting ${progress} / ${bulkCount}…` : "Deleting…"
-              : completed ? "Deletion stopped" : bulkMode ? `Delete ${bulkCount} ${bulkVersionLabel}` : "Delete version"}
+              : completed ? "Deletion stopped" : bulkMode ? `Delete ${bulkCount} ${bulkVersionLabel}` : deletingEpisodeCopy ? "Delete episode copy" : "Delete version"}
           </button>
         </div>
       </div>

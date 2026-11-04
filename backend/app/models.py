@@ -92,6 +92,7 @@ class MediaVersion(ApiModel):
     file_size_bytes: int | None = None
     parts: list[PartInfo] = Field(default_factory=list)
     streams: list[StreamInfo] = Field(default_factory=list)
+    shared_episode_count: int = 0
 
 
 class DuplicateGroup(ApiModel):
