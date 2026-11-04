@@ -210,12 +210,18 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_count, 1)
         self.assertTrue(retry_status.pending)
 
-    async def test_pin_poll_exchanges_pin_with_a_signed_device_jwt(self) -> None:
+    async def test_pin_poll_exchanges_pin_with_a_signed_jwt_and_parses_xml(self) -> None:
         token_payload = base64.urlsafe_b64encode(
             json.dumps({"exp": int(time.time()) + 3600}).encode("utf-8")
         ).rstrip(b"=").decode("ascii")
         returned_token = f"eyJraWQiOiJ0ZXN0In0.{token_payload}.signature"
-        pin_client = _FakeAsyncClient(httpx.Response(200, json={"authToken": returned_token}))
+        pin_client = _FakeAsyncClient(
+            httpx.Response(
+                200,
+                content=f'<MediaContainer authToken="{returned_token}"/>'.encode("ascii"),
+                headers={"Content-Type": "application/xml"},
+            )
+        )
         profile_client = _FakeAsyncClient(httpx.Response(200, json={"username": "test-user"}))
         service = PlexAuthService(Settings(Path("."), None, False), "test-client")
         session = AppSession()
@@ -228,6 +234,7 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(pin_client.requested)
         self.assertEqual(pin_client.requested[1], "https://clients.plex.tv/api/v2/pins/12345")
+        self.assertEqual(pin_client.requested[2]["headers"]["Accept"], "application/xml")
         device_jwt = pin_client.requested[2]["params"]["deviceJWT"]
         self.assertEqual(device_jwt, service._signed_device_jwt())
         header_part, payload_part, signature_part = device_jwt.split(".")

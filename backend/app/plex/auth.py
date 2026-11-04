@@ -181,20 +181,18 @@ class PlexAuthService:
         allowed_statuses: frozenset[int] = frozenset(),
         **kwargs: Any,
     ) -> httpx.Response:
-        headers = dict(kwargs.pop("headers", {}))
-        headers.update(
-            {
-                "Accept": "application/json",
-                "X-Plex-Client-Identifier": self.client_identifier,
-                "X-Plex-Product": "Plex-Clean",
-                "X-Plex-Version": "0.1.0",
-                "X-Plex-Platform": "Web",
-                "X-Plex-Platform-Version": "1.0",
-                "X-Plex-Device": "Browser",
-                "X-Plex-Device-Name": "Plex-Clean",
-                "X-Plex-Model": "Web",
-            }
-        )
+        headers = {
+            "Accept": "application/json",
+            "X-Plex-Client-Identifier": self.client_identifier,
+            "X-Plex-Product": "Plex-Clean",
+            "X-Plex-Version": "0.1.0",
+            "X-Plex-Platform": "Web",
+            "X-Plex-Platform-Version": "1.0",
+            "X-Plex-Device": "Browser",
+            "X-Plex-Device-Name": "Plex-Clean",
+            "X-Plex-Model": "Web",
+        }
+        headers.update(kwargs.pop("headers", {}))
         try:
             async with httpx.AsyncClient(timeout=20.0, follow_redirects=False) as client:
                 response = await client.request(method, url, headers=headers, **kwargs)
@@ -298,6 +296,7 @@ class PlexAuthService:
                 response = await self._request(
                     "GET",
                     f"{PLEX_API}/pins/{pending.pin_id}",
+                    headers={"Accept": "application/xml"},
                     params={"deviceJWT": self._signed_device_jwt()},
                 )
             except HTTPException as exc:
@@ -312,7 +311,7 @@ class PlexAuthService:
                     pending.next_poll_at = time.monotonic() + max(1.0, delay)
                 raise
 
-            payload = _json_or_xml(response)
+            payload = _container(_json_or_xml(response))
             token = payload.get("authToken") or payload.get("auth_token")
             if not token:
                 return AuthStatus(pending=True)
