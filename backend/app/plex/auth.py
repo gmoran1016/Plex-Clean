@@ -11,7 +11,7 @@ import math
 import time
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
 import xml.etree.ElementTree as ET
 
 from cryptography.hazmat.primitives import serialization
@@ -30,6 +30,11 @@ PLEX_JWT_REFRESH_WINDOW_SECONDS = 24 * 60 * 60
 PIN_POLL_INTERVAL_SECONDS = 2.0
 PLEX_AUTH_REJECTED_STATUSES = frozenset({401, 403, 498})
 logger = logging.getLogger(__name__)
+
+
+def _auth_return_url(browser_origin: str) -> str:
+    parsed = urlsplit(browser_origin)
+    return urlunsplit((parsed.scheme, parsed.netloc, "/", "plexAuthReturn=1", ""))
 
 
 def _json_or_xml(response: httpx.Response) -> dict[str, Any]:
@@ -215,10 +220,11 @@ class PlexAuthService:
             )
         return response
 
-    async def start_pin(self, session: AppSession) -> AuthStart:
+    async def start_pin(self, session: AppSession, *, browser_origin: str) -> AuthStart:
         response = await self._request(
             "POST",
             f"{PLEX_API}/pins",
+            headers={"Origin": browser_origin},
             json={"jwk": self._device_jwk(), "strong": True},
         )
         payload = _json_or_xml(response)
@@ -253,6 +259,7 @@ class PlexAuthService:
                 "clientID": self.client_identifier,
                 "code": code,
                 "context[device][product]": "Plex-Clean",
+                "forwardUrl": _auth_return_url(browser_origin),
             }
         )
         return AuthStart(

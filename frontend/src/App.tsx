@@ -9,7 +9,7 @@ import LibrarySidebar from "./components/LibrarySidebar";
 import ScanStatus from "./components/ScanStatus";
 import { isPlexAuthReturn, nextRateLimitedPollDelay, shouldPollPlexAuth } from "./authPolling";
 import { pollScanUpdate } from "./scanPolling";
-import type { AuthStart, DeleteVersionConfirmation, DuplicateGroup, ExternalMediaId, IdentityCandidate, LibrarySummary, MediaVersion, ScanProgress, ServerOption, SessionStatus } from "./types";
+import type { DeleteVersionConfirmation, DuplicateGroup, ExternalMediaId, IdentityCandidate, LibrarySummary, MediaVersion, ScanProgress, ServerOption, SessionStatus } from "./types";
 
 const PAGE_SIZE = 25;
 const BULK_PAGE_SIZE = 100;
@@ -86,10 +86,8 @@ export default function App() {
   const [identityCandidatesError, setIdentityCandidatesError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"plex-versions" | "separate-entries">("plex-versions");
   const [activeScan, setActiveScan] = useState<ScanProgress | null>(null);
-  const [authStart, setAuthStart] = useState<AuthStart | null>(null);
   const [loginInitiated, setLoginInitiated] = useState(false);
   const [loginStarting, setLoginStarting] = useState(false);
-  const [popupBlocked, setPopupBlocked] = useState(false);
   const [loading, setLoading] = useState(true);
   const [serversLoading, setServersLoading] = useState(false);
   const [groupsLoading, setGroupsLoading] = useState(false);
@@ -107,12 +105,6 @@ export default function App() {
   const [bulkProgress, setBulkProgress] = useState(0);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const bulkSelectionRequest = useRef(0);
-  const plexAuthPopup = useRef<Window | null>(null);
-  const closePlexAuthPopup = useCallback(() => {
-    const popup = plexAuthPopup.current;
-    if (popup && !popup.closed) popup.close();
-    plexAuthPopup.current = null;
-  }, []);
 
   const selectedServerId = session?.selected_server?.machine_identifier ?? null;
   const selectedLibrary = useMemo(
@@ -233,17 +225,13 @@ export default function App() {
     let timer = 0;
     let rateLimitDelayMs = 0;
     const poll = async () => {
-      if (plexAuthPopup.current?.closed) setPopupBlocked(true);
       try {
         const status = await api.getAuthStatus();
         if (!alive) return;
         setError(null);
         if (status.authenticated) {
           rateLimitDelayMs = 0;
-          closePlexAuthPopup();
-          setPopupBlocked(false);
           setLoginInitiated(false);
-          setAuthStart(null);
           setNotice(status.message);
           const updated = await api.getSession();
           if (alive) setSession(updated);
@@ -251,13 +239,10 @@ export default function App() {
         }
         if (!status.pending) {
           rateLimitDelayMs = 0;
-          closePlexAuthPopup();
-          setPopupBlocked(false);
           const updated = await api.getSession();
           if (!alive) return;
           setSession(updated);
           setLoginInitiated(false);
-          setAuthStart(null);
           setNotice(status.message);
           return;
         }
@@ -270,11 +255,8 @@ export default function App() {
               const updated = await api.getSession();
               if (alive && updated.authenticated) {
                 setError(null);
-                closePlexAuthPopup();
-                setPopupBlocked(false);
                 setSession(updated);
                 setLoginInitiated(false);
-                setAuthStart(null);
                 return;
               }
             } catch { /* Preserve the rate-limit message and retry after the backoff. */ }
@@ -285,11 +267,8 @@ export default function App() {
           try {
             const updated = await api.getSession();
             if (alive && updated.authenticated) {
-              closePlexAuthPopup();
-              setPopupBlocked(false);
               setSession(updated);
               setLoginInitiated(false);
-              setAuthStart(null);
               return;
             }
           } catch { /* Continue polling; the error above remains visible. */ }
@@ -299,7 +278,7 @@ export default function App() {
     };
     timer = window.setTimeout(poll, 900);
     return () => { alive = false; window.clearTimeout(timer); };
-  }, [authWatching, closePlexAuthPopup]);
+  }, [authWatching]);
 
   useEffect(() => {
     if (!selectedServerId) {
@@ -418,27 +397,13 @@ export default function App() {
     setError(null);
     setNotice(null);
     setLoginStarting(true);
-    setPopupBlocked(false);
-    let popup: Window | null = null;
-    try {
-      popup = window.open("about:blank", "plexclean-plex-sign-in", "popup,width=560,height=760,resizable=yes,scrollbars=yes");
-    } catch { /* Some browser policies throw instead of returning a blocked popup. */ }
-    plexAuthPopup.current = popup;
     try {
       const started = await api.startPlexLogin(session.csrf_token);
-      setAuthStart(started);
       setSession((current) => current ? { ...current, authenticated: false, auth_pending: true } : current);
       setLoginInitiated(true);
-      setPopupBlocked(!popup || popup.closed);
-      if (popup && !popup.closed) {
-        try { popup.location.replace(started.authorization_url); }
-        catch { setPopupBlocked(true); }
-      }
+      window.location.assign(started.authorization_url);
     } catch (reason) {
-      closePlexAuthPopup();
-      setPopupBlocked(false);
       setLoginInitiated(false);
-      setAuthStart(null);
       setError(errorMessage(reason));
     } finally {
       setLoginStarting(false);
@@ -459,10 +424,7 @@ export default function App() {
       setIdentityOffset(0);
       setIdentityCandidatesError(null);
       setActiveScan(null);
-      closePlexAuthPopup();
-      setPopupBlocked(false);
       setLoginInitiated(false);
-      setAuthStart(null);
       setBulkSelection({});
       setNotice("Signed out of Plex.");
       setError(null);
@@ -929,22 +891,15 @@ export default function App() {
           <p className="login-description">Compare multiple versions of movies and episodes, then review the selected files before asking Plex to delete them.</p>
           {error && <p className="alert alert-error" role="alert">{error}</p>}
           {notice && <p className="alert alert-info" role="status">{notice}</p>}
-          {authStart ? (
-            <div className="login-pending" aria-live="polite">
-              <p className="plex-waiting"><span className="loading-mark" aria-hidden="true" />Waiting for approval in Plex</p>
-              <p>Approve Plex-Clean in the Plex window. This page will continue automatically.</p>
-              {popupBlocked && <a className="button button-secondary" href={authStart.authorization_url} rel="noreferrer" target="_blank">Continue to Plex <span aria-hidden="true">↗</span></a>}
-              <p className="expiry-note">This request expires {new Date(authStart.expires_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.</p>
-            </div>
-          ) : session.auth_pending || loginInitiated ? (
+          {session.auth_pending || loginInitiated ? (
             <div className="login-pending">
-              <p>A Plex sign-in request is already pending in this browser.</p>
+              <p>A Plex sign-in request is already pending for this browser.</p>
               <button className="button button-plex" disabled={loginStarting || loginInitiated} onClick={startLogin} type="button">
                 <span className="plex-button-mark" aria-hidden="true">P</span>
-                <span>{loginStarting ? "Opening Plex…" : "Open a new Plex sign-in"}</span>
+                <span>{loginStarting ? "Opening Plex…" : "Start a new Plex sign-in"}</span>
                 {!loginStarting && <span className="plex-button-arrow" aria-hidden="true">↗</span>}
               </button>
-              <p>Approve the request in its Plex window, or open a new one if you no longer have it.</p>
+              <p>Finish the open Plex sign-in, or start a new request if it has expired.</p>
             </div>
           ) : (
             <button className="button button-plex login-action" disabled={loginStarting} onClick={startLogin} type="button">
