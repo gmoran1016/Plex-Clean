@@ -268,7 +268,7 @@ class PlexAuthService:
             }
         )
         return AuthStart(
-            authorization_url=f"https://app.plex.tv/auth/#!?{authorization_parameters}",
+            authorization_url=f"https://app.plex.tv/auth#?{authorization_parameters}",
             pin_code=code,
             expires_at=datetime.fromtimestamp(expiry, tz=UTC),
         )
