@@ -256,10 +256,15 @@ a { color: inherit; }
 .login-panel h1 { margin: 0; font-size: clamp(32px, 6vw, 45px); line-height: 1.12; letter-spacing: -0.05em; font-weight: 650; }
 .login-panel h1 span { color: var(--text-tertiary); }
 .login-description { max-width: 42ch; margin: 20px 0 26px; color: var(--text-secondary); font-size: 14px; line-height: 1.7; }
-.login-action { min-width: 180px; min-height: 44px; }
+.login-action { min-width: 238px; min-height: 48px; }
+.button-plex { min-height: 44px; justify-content: flex-start; gap: 11px; padding-inline: 13px; border: 1px solid #e5a00d; border-radius: 6px; background: #e5a00d; color: #17130b; font-weight: 680; }
+.button-plex:hover:not(:disabled) { border-color: #f2b51b; background: #f2b51b; }
+.plex-button-mark { width: 23px; height: 23px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 4px; background: #211b0e; color: #f6bd38; font-size: 13px; font-weight: 800; letter-spacing: -0.06em; }
+.plex-button-arrow { margin-left: auto; font-size: 15px; line-height: 1; }
 .login-pending { display: grid; justify-items: start; gap: 13px; }
 .login-pending p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.65; }
-.plex-pin-code { display: inline-block; padding: 10px 13px; border: 1px solid var(--border-strong); border-radius: var(--radius-small); background: var(--surface-inset); color: var(--text-primary); font-family: var(--mono); font-size: 24px; font-weight: 650; letter-spacing: 0.18em; font-variant-numeric: tabular-nums; }
+.plex-waiting { display: flex; align-items: center; gap: 10px; color: var(--text-primary) !important; font-size: 13px !important; font-weight: 620; }
+.plex-waiting .loading-mark { width: 13px; height: 13px; border-width: 2px; }
 .login-pending .expiry-note { color: var(--text-tertiary); font-size: 10px; }
 .privacy-note { max-width: 44ch; margin: 48px 0 0; padding-top: 15px; border-top: 1px solid var(--border-soft); color: var(--text-muted); font-size: 10px; line-height: 1.6; }
 .alert { padding: 11px 13px; border-left: 2px solid; font-size: 11px; line-height: 1.5; }

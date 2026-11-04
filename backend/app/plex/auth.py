@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import logging
+import math
 import time
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 import xml.etree.ElementTree as ET
 
 from cryptography.hazmat.primitives import serialization
@@ -23,6 +25,9 @@ from app.sessions import AppSession, PendingPlexAuth, ServerAccess
 
 PLEX_API = "https://clients.plex.tv/api/v2"
 PLEX_TV_API = "https://plex.tv/api/v2"
+PLEX_JWT_LIFETIME_SECONDS = 7 * 24 * 60 * 60
+PLEX_JWT_REFRESH_WINDOW_SECONDS = 24 * 60 * 60
+PLEX_AUTH_REJECTED_STATUSES = frozenset({401, 403, 498})
 logger = logging.getLogger(__name__)
 
 
@@ -82,6 +87,27 @@ def _is_jwt_token(value: Any) -> bool:
     return isinstance(value, str) and value.count(".") == 2
 
 
+def _jwt_expiration(value: str) -> float | None:
+    if not _is_jwt_token(value):
+        return None
+    try:
+        payload_part = value.split(".", 2)[1]
+        payload_json = base64.urlsafe_b64decode(payload_part + "=" * (-len(payload_part) % 4))
+        payload = json.loads(payload_json)
+    except (binascii.Error, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    expiration = payload.get("exp")
+    if isinstance(expiration, bool) or not isinstance(expiration, (int, float)):
+        return None
+    try:
+        result = float(expiration)
+    except OverflowError:
+        return None
+    return result if math.isfinite(result) else None
+
+
 def _device_access_token(device: dict[str, Any]) -> str | None:
     for key in ("accessToken", "access_token", "token", "authToken"):
         value = device.get(key)
@@ -124,7 +150,7 @@ class PlexAuthService:
             "use": "sig",
         }
 
-    def _signed_device_jwt(self) -> str:
+    def _signed_device_jwt(self, nonce: str | None = None) -> str:
         issued_at = int(time.time())
         header = {"alg": "EdDSA", "typ": "JWT", "kid": self.device_key_id}
         payload = {
@@ -133,6 +159,9 @@ class PlexAuthService:
             "iat": issued_at,
             "exp": issued_at + 300,
         }
+        if nonce is not None:
+            payload["nonce"] = nonce
+            payload["scope"] = "username"
         signing_input = ".".join(
             (
                 self._base64url(json.dumps(header, separators=(",", ":")).encode("utf-8")),
@@ -148,6 +177,7 @@ class PlexAuthService:
         url: str,
         *,
         allow_unauthorized: bool = False,
+        allowed_statuses: frozenset[int] = frozenset(),
         **kwargs: Any,
     ) -> httpx.Response:
         headers = dict(kwargs.pop("headers", {}))
@@ -164,17 +194,20 @@ class PlexAuthService:
                 response = await client.request(method, url, headers=headers, **kwargs)
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail="Could not reach Plex authentication services.") from exc
-        if response.status_code >= 400 and not (allow_unauthorized and response.status_code == 401):
-            if response.status_code == 429:
-                headers = {}
-                retry_after = response.headers.get("Retry-After")
-                if retry_after:
-                    headers["Retry-After"] = retry_after
-                raise HTTPException(
-                    status_code=429,
-                    detail="Plex temporarily rate-limited this request.",
-                    headers=headers or None,
-                )
+        if response.status_code == 429:
+            retry_headers = {}
+            retry_after = response.headers.get("Retry-After")
+            if retry_after:
+                retry_headers["Retry-After"] = retry_after
+            raise HTTPException(
+                status_code=429,
+                detail="Plex temporarily rate-limited this request.",
+                headers=retry_headers or None,
+            )
+        allowed = response.status_code in allowed_statuses or (
+            allow_unauthorized and response.status_code == 401
+        )
+        if response.status_code >= 400 and not allowed:
             raise HTTPException(
                 status_code=502,
                 detail="Plex could not complete sign-in. Try again shortly.",
@@ -185,7 +218,7 @@ class PlexAuthService:
         response = await self._request(
             "POST",
             f"{PLEX_API}/pins",
-            json={"jwk": self._device_jwk()},
+            json={"jwk": self._device_jwk(), "strong": True},
         )
         payload = _json_or_xml(response)
         try:
@@ -214,8 +247,15 @@ class PlexAuthService:
         session.server_access.clear()
         session.selected_server_id = None
 
+        authorization_parameters = urlencode(
+            {
+                "clientID": self.client_identifier,
+                "code": code,
+                "context[device][product]": "Plex-Clean",
+            }
+        )
         return AuthStart(
-            authorization_url="https://plex.tv/link",
+            authorization_url=f"https://app.plex.tv/auth#?{authorization_parameters}",
             pin_code=code,
             expires_at=datetime.fromtimestamp(expiry, tz=UTC),
         )
@@ -239,9 +279,9 @@ class PlexAuthService:
             return AuthStatus(pending=True)
 
         session.plex_token = str(token)
-        # The Plex JWT stays in memory only, with a shorter app session
-        # lifetime than Plex's token lifetime.
-        session.plex_token_expires_at = time.time() + 24 * 60 * 60
+        session.plex_token_expires_at = _jwt_expiration(session.plex_token) or (
+            time.time() + PLEX_JWT_LIFETIME_SECONDS
+        )
         session.pending_auth = None
         await self._load_account_profile(session)
         return AuthStatus(authenticated=True, pending=False, username=session.username)
@@ -253,18 +293,38 @@ class PlexAuthService:
         *,
         api_base: str = PLEX_API,
         allow_unauthorized: bool = False,
+        refresh_expired_token: bool = True,
     ) -> httpx.Response:
         if not session.plex_token:
             raise HTTPException(status_code=401, detail="Sign in to Plex to continue.")
-        return await self._request(
-            "GET",
-            f"{api_base}/{path.lstrip('/')}",
-            headers={"X-Plex-Token": session.plex_token},
-            params={"includeHttps": 1, "includeRelay": 1, "includeIPv6": 1}
+        request_url = f"{api_base}/{path.lstrip('/')}"
+        request_params = (
+            {"includeHttps": 1, "includeRelay": 1, "includeIPv6": 1}
             if path.strip("/") == "resources"
-            else None,
-            allow_unauthorized=allow_unauthorized,
+            else None
         )
+        response = await self._request(
+            "GET",
+            request_url,
+            headers={"X-Plex-Token": session.plex_token},
+            params=request_params,
+            allow_unauthorized=allow_unauthorized,
+            allowed_statuses=frozenset({498}),
+        )
+        if response.status_code == 498 and refresh_expired_token:
+            await self._refresh_account_token(session)
+            response = await self._request(
+                "GET",
+                request_url,
+                headers={"X-Plex-Token": session.plex_token or ""},
+                params=request_params,
+                allow_unauthorized=allow_unauthorized,
+                allowed_statuses=frozenset({498}),
+            )
+            if response.status_code in {401, 498}:
+                session.clear_sensitive()
+                raise HTTPException(status_code=401, detail="Plex sign-in expired. Sign in again.")
+        return response
 
     async def _load_account_profile(self, session: AppSession) -> None:
         try:
@@ -278,10 +338,42 @@ class PlexAuthService:
     async def refresh_if_needed(self, session: AppSession) -> None:
         if not session.plex_token:
             raise HTTPException(status_code=401, detail="Plex sign-in expired. Sign in again.")
-        if session.plex_token_expires_at and session.plex_token_expires_at > time.time():
+        now = time.time()
+        expires_at = session.plex_token_expires_at or _jwt_expiration(session.plex_token)
+        if expires_at is None:
+            expires_at = now + PLEX_JWT_LIFETIME_SECONDS
+        session.plex_token_expires_at = expires_at
+        if expires_at > now + PLEX_JWT_REFRESH_WINDOW_SECONDS:
             return
-        session.clear_sensitive()
-        raise HTTPException(status_code=401, detail="Plex sign-in expired. Sign in again.")
+
+        await self._refresh_account_token(session)
+
+    async def _refresh_account_token(self, session: AppSession) -> None:
+        if not session.plex_token:
+            raise HTTPException(status_code=401, detail="Plex sign-in expired. Sign in again.")
+        nonce_response = await self._request("GET", f"{PLEX_API}/auth/nonce")
+        nonce = _json_or_xml(nonce_response).get("nonce")
+        if not isinstance(nonce, str) or not nonce:
+            raise HTTPException(status_code=502, detail="Plex could not prepare a secure token refresh.")
+
+        token_response = await self._request(
+            "POST",
+            f"{PLEX_API}/auth/token",
+            json={"jwt": self._signed_device_jwt(nonce)},
+            allowed_statuses=PLEX_AUTH_REJECTED_STATUSES,
+        )
+        if token_response.status_code in PLEX_AUTH_REJECTED_STATUSES:
+            session.clear_sensitive()
+            raise HTTPException(status_code=401, detail="Plex sign-in expired. Sign in again.")
+
+        refreshed_payload = _json_or_xml(token_response)
+        refreshed_token = refreshed_payload.get("auth_token") or refreshed_payload.get("authToken")
+        if not isinstance(refreshed_token, str) or not refreshed_token:
+            raise HTTPException(status_code=502, detail="Plex returned an invalid refreshed token.")
+        session.plex_token = refreshed_token
+        session.plex_token_expires_at = _jwt_expiration(refreshed_token) or (
+            time.time() + PLEX_JWT_LIFETIME_SECONDS
+        )
 
 
 class PlexResourceService:
@@ -302,6 +394,18 @@ class PlexResourceService:
             )
             resource_api_base = PLEX_TV_API
             used_canonical_resource_host = True
+        if response.status_code == 401:
+            await self.auth._refresh_account_token(session)
+            response = await self.auth._account_request(
+                session,
+                "resources",
+                api_base=resource_api_base,
+                allow_unauthorized=True,
+                refresh_expired_token=False,
+            )
+            if response.status_code in {401, 498}:
+                session.clear_sensitive()
+                raise HTTPException(status_code=401, detail="Plex sign-in expired. Sign in again.")
         if response.status_code >= 400:
             raise HTTPException(
                 status_code=502,

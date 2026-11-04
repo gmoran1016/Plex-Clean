@@ -58,7 +58,10 @@ class PlexClient:
             raise HTTPException(status_code=502, detail="Could not reach the selected Plex server.") from exc
 
         if response.status_code == 401:
-            session.clear_sensitive()
+            session.clear_server_state()
             session.csrf_token = secrets.token_urlsafe(32)
-            raise HTTPException(status_code=401, detail="Plex rejected this server token. Sign in again.")
+            raise HTTPException(
+                status_code=401,
+                detail="Plex rejected this server connection. Your Plex sign-in is still saved; choose a server again.",
+            )
         return response

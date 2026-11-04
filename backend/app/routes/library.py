@@ -20,6 +20,7 @@ def _service(request: Request) -> PlexLibraryService:
         service = PlexLibraryService(PlexClient(PlexAuthService(
             request.app.state.settings,
             request.app.state.plex_client_identifier,
+            request.app.state.plex_device_private_key,
         )))
         request.app.state.library_service = service
     return service
@@ -81,7 +82,11 @@ async def get_poster(
     path = session.poster_paths.get(rating_key)
     if not path or not path.startswith("/") or path.startswith("//"):
         raise HTTPException(status_code=404, detail="Poster is not available for this item.")
-    auth = PlexAuthService(request.app.state.settings, request.app.state.plex_client_identifier)
+    auth = PlexAuthService(
+        request.app.state.settings,
+        request.app.state.plex_client_identifier,
+        request.app.state.plex_device_private_key,
+    )
     result = await PlexClient(auth).request("GET", path, session=session)
     if result.status_code >= 400:
         raise HTTPException(status_code=404, detail="Plex no longer has this poster.")

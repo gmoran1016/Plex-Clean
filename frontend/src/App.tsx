@@ -88,6 +88,8 @@ export default function App() {
   const [activeScan, setActiveScan] = useState<ScanProgress | null>(null);
   const [authStart, setAuthStart] = useState<AuthStart | null>(null);
   const [loginInitiated, setLoginInitiated] = useState(false);
+  const [loginStarting, setLoginStarting] = useState(false);
+  const [popupBlocked, setPopupBlocked] = useState(false);
   const [loading, setLoading] = useState(true);
   const [serversLoading, setServersLoading] = useState(false);
   const [groupsLoading, setGroupsLoading] = useState(false);
@@ -105,6 +107,12 @@ export default function App() {
   const [bulkProgress, setBulkProgress] = useState(0);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const bulkSelectionRequest = useRef(0);
+  const plexAuthPopup = useRef<Window | null>(null);
+  const closePlexAuthPopup = useCallback(() => {
+    const popup = plexAuthPopup.current;
+    if (popup && !popup.closed) popup.close();
+    plexAuthPopup.current = null;
+  }, []);
 
   const selectedServerId = session?.selected_server?.machine_identifier ?? null;
   const selectedLibrary = useMemo(
@@ -141,7 +149,7 @@ export default function App() {
   useEffect(() => {
     let alive = true;
     const handleUnauthorized = () => {
-      void api.getSession().then((updated) => {
+      void api.getSession().then(async (updated) => {
         if (!alive) return;
         setSession(updated);
         setServers([]);
@@ -151,8 +159,39 @@ export default function App() {
         setIdentityCandidates([]);
         setIdentityOffset(0);
         setActiveScan(null);
-        setNotice("Your Plex sign-in is no longer active. Sign in again to continue.");
-      }).catch(() => undefined);
+        setError(null);
+        if (!updated.authenticated) {
+          setNotice("Your Plex sign-in is no longer active. Sign in again to continue.");
+          return;
+        }
+
+        setNotice("Plex-Clean is refreshing its connection to your Plex servers.");
+        setServersLoading(true);
+        try {
+          const available = await api.getServers();
+          if (!alive) return;
+          setServers(available);
+          const refreshed = await api.getSession();
+          if (!alive) return;
+          setSession(refreshed);
+          setLibraries(refreshed.libraries);
+          setActiveScan(refreshed.scan);
+          setSelectedLibraryId(refreshed.libraries[0]?.library_id ?? null);
+          if (available.length === 0) {
+            setNotice("Plex-Clean kept your sign-in but could not reach a Plex Media Server. Check Docker network access or set PLEX_SERVER_URL in your Compose file.");
+          } else if (available.length > 1 && !refreshed.selected_server) {
+            setNotice("Plex-Clean refreshed its Plex connection. Choose a server to continue.");
+          } else {
+            setNotice(null);
+          }
+        } catch (reason) {
+          if (alive) setError(errorMessage(reason));
+        } finally {
+          if (alive) setServersLoading(false);
+        }
+      }).catch((reason: unknown) => {
+        if (alive) setError(errorMessage(reason));
+      });
     };
     window.addEventListener("plexclean:unauthorized", handleUnauthorized);
     return () => {
@@ -189,12 +228,15 @@ export default function App() {
     let timer = 0;
     let rateLimitDelayMs = 0;
     const poll = async () => {
+      if (plexAuthPopup.current?.closed) setPopupBlocked(true);
       try {
         const status = await api.getAuthStatus();
         if (!alive) return;
         setError(null);
         if (status.authenticated) {
           rateLimitDelayMs = 0;
+          closePlexAuthPopup();
+          setPopupBlocked(false);
           setLoginInitiated(false);
           setAuthStart(null);
           setNotice(status.message);
@@ -204,6 +246,8 @@ export default function App() {
         }
         if (!status.pending) {
           rateLimitDelayMs = 0;
+          closePlexAuthPopup();
+          setPopupBlocked(false);
           const updated = await api.getSession();
           if (!alive) return;
           setSession(updated);
@@ -221,6 +265,8 @@ export default function App() {
               const updated = await api.getSession();
               if (alive && updated.authenticated) {
                 setError(null);
+                closePlexAuthPopup();
+                setPopupBlocked(false);
                 setSession(updated);
                 setLoginInitiated(false);
                 setAuthStart(null);
@@ -234,6 +280,8 @@ export default function App() {
           try {
             const updated = await api.getSession();
             if (alive && updated.authenticated) {
+              closePlexAuthPopup();
+              setPopupBlocked(false);
               setSession(updated);
               setLoginInitiated(false);
               setAuthStart(null);
@@ -246,7 +294,7 @@ export default function App() {
     };
     timer = window.setTimeout(poll, 900);
     return () => { alive = false; window.clearTimeout(timer); };
-  }, [authWatching]);
+  }, [authWatching, closePlexAuthPopup]);
 
   useEffect(() => {
     if (!selectedServerId) {
@@ -361,15 +409,35 @@ export default function App() {
   }
 
   async function startLogin() {
-    if (!session) return;
+    if (!session || loginStarting || loginInitiated) return;
     setError(null);
     setNotice(null);
+    setLoginStarting(true);
+    setPopupBlocked(false);
+    let popup: Window | null = null;
+    try {
+      popup = window.open("about:blank", "plexclean-plex-sign-in", "popup,width=560,height=760,resizable=yes,scrollbars=yes");
+    } catch { /* Some browser policies throw instead of returning a blocked popup. */ }
+    plexAuthPopup.current = popup;
     try {
       const started = await api.startPlexLogin(session.csrf_token);
       setAuthStart(started);
       setSession((current) => current ? { ...current, authenticated: false, auth_pending: true } : current);
       setLoginInitiated(true);
-    } catch (reason) { setError(errorMessage(reason)); }
+      setPopupBlocked(!popup || popup.closed);
+      if (popup && !popup.closed) {
+        try { popup.location.replace(started.authorization_url); }
+        catch { setPopupBlocked(true); }
+      }
+    } catch (reason) {
+      closePlexAuthPopup();
+      setPopupBlocked(false);
+      setLoginInitiated(false);
+      setAuthStart(null);
+      setError(errorMessage(reason));
+    } finally {
+      setLoginStarting(false);
+    }
   }
 
   async function logout() {
@@ -386,6 +454,9 @@ export default function App() {
       setIdentityOffset(0);
       setIdentityCandidatesError(null);
       setActiveScan(null);
+      closePlexAuthPopup();
+      setPopupBlocked(false);
+      setLoginInitiated(false);
       setAuthStart(null);
       setBulkSelection({});
       setNotice("Signed out of Plex.");
@@ -854,23 +925,30 @@ export default function App() {
           {error && <p className="alert alert-error" role="alert">{error}</p>}
           {notice && <p className="alert alert-info" role="status">{notice}</p>}
           {authStart ? (
-            <div className="login-pending">
-              <p>Open Plex Link, enter this one-time code, and approve Plex-Clean.</p>
-              <code className="plex-pin-code" aria-label="Plex sign-in code">{authStart.pin_code}</code>
-              <a className="button button-primary" href={authStart.authorization_url} rel="noreferrer" target="_blank">Open Plex Link</a>
-              <p>Keep this page open while Plex-Clean checks for approval.</p>
-              <p className="expiry-note">PIN expires {new Date(authStart.expires_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.</p>
+            <div className="login-pending" aria-live="polite">
+              <p className="plex-waiting"><span className="loading-mark" aria-hidden="true" />Waiting for approval in Plex</p>
+              <p>Approve Plex-Clean in the Plex window. This page will continue automatically.</p>
+              {popupBlocked && <a className="button button-secondary" href={authStart.authorization_url} rel="noreferrer" target="_blank">Continue to Plex <span aria-hidden="true">↗</span></a>}
+              <p className="expiry-note">This request expires {new Date(authStart.expires_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.</p>
             </div>
           ) : session.auth_pending || loginInitiated ? (
             <div className="login-pending">
-              <p>A sign-in request is already pending. If you no longer have its code, start a new one.</p>
-              <button className="button button-primary" disabled={loginInitiated} onClick={startLogin} type="button">Get a new sign-in code</button>
-              <p>Keep this page open while Plex-Clean checks for approval.</p>
+              <p>A Plex sign-in request is already pending in this browser.</p>
+              <button className="button button-plex" disabled={loginStarting || loginInitiated} onClick={startLogin} type="button">
+                <span className="plex-button-mark" aria-hidden="true">P</span>
+                <span>{loginStarting ? "Opening Plex…" : "Open a new Plex sign-in"}</span>
+                {!loginStarting && <span className="plex-button-arrow" aria-hidden="true">↗</span>}
+              </button>
+              <p>Approve the request in its Plex window, or open a new one if you no longer have it.</p>
             </div>
           ) : (
-            <button className="button button-primary login-action" onClick={startLogin} type="button">Sign in with Plex</button>
+            <button className="button button-plex login-action" disabled={loginStarting} onClick={startLogin} type="button">
+              <span className="plex-button-mark" aria-hidden="true">P</span>
+              <span>{loginStarting ? "Opening Plex…" : "Sign in with Plex"}</span>
+              {!loginStarting && <span className="plex-button-arrow" aria-hidden="true">↗</span>}
+            </button>
           )}
-          <p className="privacy-note">Plex-Clean keeps your Plex token in server memory and stops using it after 24 hours. It is never stored in your browser.</p>
+          <p className="privacy-note">Plex-Clean remembers this browser’s Plex authorization across app restarts. Sign out here to remove it, or revoke Plex-Clean from your Plex account.</p>
         </section>
       </main>
     );

@@ -91,7 +91,7 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 429)
         self.assertEqual(raised.exception.headers, {"Retry-After": "45"})
 
-    async def test_short_pin_auth_registers_device_jwk_and_provides_plex_link_code(self) -> None:
+    async def test_strong_pin_auth_registers_device_jwk_and_provides_auth_app_url(self) -> None:
         response = httpx.Response(200, json={"id": 12345, "code": "4821", "expiresIn": 600})
         plex_client = _FakeAsyncClient(response)
         service = PlexAuthService(Settings(Path("."), None, False), "test-client")
@@ -113,8 +113,11 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(jwk["x"], service._base64url(public_bytes))
         self.assertEqual(jwk["alg"], "EdDSA")
         self.assertEqual(jwk["kid"], service.device_key_id)
-        self.assertNotIn("strong", request_options["json"])
-        self.assertEqual(started.authorization_url, "https://plex.tv/link")
+        self.assertTrue(request_options["json"]["strong"])
+        self.assertEqual(
+            started.authorization_url,
+            "https://app.plex.tv/auth#?clientID=test-client&code=4821&context%5Bdevice%5D%5Bproduct%5D=Plex-Clean",
+        )
         self.assertEqual(started.pin_code, "4821")
         self.assertEqual(session.pending_auth.pin_id, 12345)
 

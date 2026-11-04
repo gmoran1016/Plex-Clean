@@ -33,12 +33,12 @@ Do not add a Plex media path. Plex-Clean reviews metadata and submits confirmed 
 
 After the container starts, open `http://<unraid-ip>:8090`. Sign in with Plex and select the server. If Plex advertises a server address the container cannot reach, set `PLEX_SERVER_URL` to the reachable Plex URL in the container environment and restart it.
 
-The app listens on the configured host port. The named `plex_clean_config` volume mounted at `/config` stores the stable Plex client identifier and the Ed25519 private signing key used for Plex's JWK-backed sign-in. Treat this volume as sensitive and retain it across container restarts.
+The app listens on the configured host port. The named `plex_clean_config` volume mounted at `/config` stores the stable Plex client identifier, Ed25519 private signing key, and remembered Plex account credentials for signed-in browsers. Treat this volume as sensitive and retain it across container restarts.
 
 ## Sign in and scan
 
-1. Select **Sign in with Plex**, then open Plex Link.
-2. Enter the short, one-time code shown by Plex-Clean. The app signs the PIN check with its device key, then discovers reachable Plex Media Servers.
+1. Select **Sign in with Plex**. Plex-Clean opens Plex's approval page in a new window; if your browser blocks it, select **Continue to Plex**.
+2. Sign in to Plex and approve Plex-Clean. Keep the Plex-Clean tab open; it detects approval automatically and discovers reachable Plex Media Servers. You do not need to copy or enter a code.
 3. If more than one server is available, choose the server that contains the libraries to review.
 4. Select a Movie or TV library and start a scan. TV is scanned at episode level.
 5. Use **Same item** to compare the media versions Plex associates with one item, or **Separate items** to review distinct entries with a matching supported ID. Expand **Show file paths and stream details** to see Plex-reported paths and individual video, audio, and subtitle streams.
@@ -65,9 +65,11 @@ Use the address and port reachable from the container, not necessarily the URL u
 
 ## Session and access
 
-- Plex account/server tokens, scan state, and duplicate results stay in app memory. The app stops using the account token after 24 hours; tokens are not stored in browser storage or on disk.
-- Restarting the container clears sessions and requires Plex sign-in again. The `/config` volume preserves the client identifier and private signing key; the key is stored as a mode-0600 file inside the container.
-- The session cookie is `HttpOnly` and `SameSite=Lax`. For HTTPS behind a trusted reverse proxy, set `SESSION_COOKIE_SECURE=true` in `.env`.
+- Plex-Clean remembers authorization separately for each browser. The Plex account JWT is stored in `/config/plex-sessions` in a mode-0600 file named from a hash of that browser's session ID; the raw Plex token is never sent to browser storage or written to logs. Plex-Clean refreshes the seven-day token through Plex using the stable Ed25519 device key.
+- The `/config` volume also stores the stable client identifier and private signing key in mode-0600 files. Keep this volume private and retain it across container restarts. Removing the volume removes the remembered authorizations.
+- The browser's `HttpOnly`, `SameSite=Lax` cookie lasts one year and is refreshed while the app is used. Signing out removes only that browser's saved Plex authorization. Plex revocation, cookie removal, or a definitive Plex credential rejection requires a new sign-in.
+- Server connection tokens, server selection, scan state, and review results stay in app memory. A container restart or 24-hour idle-session eviction clears them; the same browser restores its Plex authorization and rediscovers servers automatically.
+- For HTTPS behind a trusted reverse proxy, set `SESSION_COOKIE_SECURE=true` in `.env`.
 - Keep the default HTTP endpoint on a trusted home network. Do not expose it directly to the public internet; use HTTPS and restrict access at the reverse proxy/firewall.
 - The container runs as a non-root user with dropped Linux capabilities. It has no media-volume mount.
 
@@ -78,4 +80,4 @@ docker compose logs -f plex-clean
 docker compose down
 ```
 
-`docker compose down` leaves the named config volume in place. To remove it, use `docker compose down --volumes`; this removes the client identifier and signing key and is not needed for normal sign-out or restart.
+`docker compose down` leaves the named config volume in place. To remove it, use `docker compose down --volumes`; this removes the client identifier, signing key, and all remembered browser authorizations. It is not needed for normal sign-out or restart.

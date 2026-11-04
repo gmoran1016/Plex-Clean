@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,6 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from app.auth_storage import PlexCredentialStore
 from app.config import Settings
 from app.routes.auth import router as auth_router
 from app.routes.deletion import router as deletion_router
@@ -26,11 +28,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.plex_client_identifier = app_settings.load_or_create_client_identifier()
         app.state.plex_device_private_key = app_settings.load_or_create_plex_device_key()
+        app.state.plex_credential_store.prune(time.time())
         yield
 
     app = FastAPI(title="Plex-Clean", version="0.1.0", lifespan=lifespan)
     app.state.settings = app_settings
-    app.state.session_store = SessionStore(app_settings.session_idle_timeout_seconds)
+    app.state.plex_credential_store = PlexCredentialStore(app_settings.config_dir)
+    app.state.session_store = SessionStore(
+        app_settings.session_idle_timeout_seconds,
+        credentials=app.state.plex_credential_store,
+    )
 
     @app.middleware("http")
     async def attach_api_session(request: Request, call_next: Callable) -> Response:
@@ -42,16 +49,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session_id, session = store.get_or_create(old_session_id)
         session.client_identifier = getattr(request.app.state, "plex_client_identifier", None)
         request.state.app_session = session
+        request.state.app_session_id = session_id
         response = await call_next(request)
-        if old_session_id != session_id:
-            response.set_cookie(
-                key=app_settings.session_cookie_name,
-                value=session_id,
-                httponly=True,
-                secure=app_settings.session_cookie_secure,
-                samesite="lax",
-                path="/",
-            )
+        store.persist_authentication_if_needed(session_id, session)
+        response.set_cookie(
+            key=app_settings.session_cookie_name,
+            value=session_id,
+            max_age=365 * 24 * 60 * 60,
+            httponly=True,
+            secure=app_settings.session_cookie_secure,
+            samesite="lax",
+            path="/",
+        )
         return response
 
     @app.get("/healthz", tags=["health"])

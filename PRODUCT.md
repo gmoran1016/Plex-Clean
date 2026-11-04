@@ -23,18 +23,19 @@ Plex-Clean uses Plex's own multiple-version records to identify versions attache
 - The app is self-hosted as a Docker Compose service and uses Plex sign-in; there is no separate Plex-Clean account.
 - The container needs network access to Plex.tv for sign-in and server discovery, and to the selected Plex Media Server for library and deletion operations.
 - The administrator selects a reachable server when more than one is available, then scans Movie and TV libraries. TV results are reviewed at episode level.
-- Results are session-scoped. Restarting the container clears the session and scan results, so the administrator signs in again.
+- Plex authorization is remembered separately for each browser across app and container restarts. Server selection and scan results remain session-scoped and are reloaded after a restart.
 - The default endpoint is intended for a trusted home network. Remote access requires HTTPS and access restrictions at the reverse proxy or firewall.
 
 ## Capabilities and Constraints
 
-- Plex PIN sign-in, reachable server selection, library scans with progress, duplicate-version comparison, and separate-entry candidate review using exact supported item IDs.
+- Plex Auth App approval from a one-click sign-in, per-browser remembered authorization, reachable server selection, library scans with progress, duplicate-version comparison, and separate-entry candidate review using exact supported item IDs.
 - Comparison details include Plex-provided title and episode context, edition, runtime, resolution, bitrate, size, container, codecs, streams, and paths when available. Missing values remain unknown.
 - A user can request deletion of one reviewed version through Plex. Separate-entry candidates also support individual selections and a constrained safe-selection batch; the complete batch is reviewed and confirmed before sequential deletion. Selection alone never deletes media.
 - In TV libraries, Plex-Clean identifies media paths referenced by multiple episode entries, explains the shared-file risk, and disables deletion for those paths so a combined episode file is not removed accidentally.
 - Before deletion, Plex-Clean rechecks the selected server, library, item, media identifiers, and associated parts and paths. It stops on stale data or an error and does not automatically retry a destructive request.
 - Plex-Clean does not mount or access media directories, hash files, or match distinct entries by title or filename. It cannot independently verify storage after Plex responds.
-- Plex account and server tokens remain in server memory and expire from use after 24 hours. The `/config` volume retains the client identifier and device signing key; neither secret is sent to browser storage or logs.
+- Plex account JWTs are stored server-side in the sensitive `/config` volume, associated with a hash of the browser's persistent `HttpOnly` session cookie, and refreshed through Plex using the stable Ed25519 device key. The raw account token is never sent to browser storage or logs. Sign-out removes only that browser's saved authorization.
+- Plex server connection tokens, server selection, scan state, and review results remain in memory and are not persisted; they are rediscovered or rescanned after a restart or idle-session eviction.
 - Music, photos, and other non-video library types are outside scope. Deletion requires Plex server permission.
 - Open decision: the user requested an individual-entry ignore option, but the ignored unit, persistence, restore behavior, and interaction with shared-ID candidates have not been approved.
 
