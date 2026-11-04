@@ -115,7 +115,7 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_options["headers"]["X-Plex-Device"], "Browser")
         self.assertEqual(request_options["headers"]["X-Plex-Device-Name"], "Plex-Clean")
         auth_parameters = parse_qs(urlsplit(started.authorization_url).fragment.lstrip("!?"))
-        self.assertTrue(started.authorization_url.startswith("https://app.plex.tv/auth/#!?"))
+        self.assertTrue(started.authorization_url.startswith("https://app.plex.tv/auth#?"))
         self.assertEqual(auth_parameters["clientID"], ["test-client"])
         self.assertEqual(auth_parameters["code"], ["4821"])
         self.assertEqual(auth_parameters["context[device][product]"], ["Plex-Clean"])
