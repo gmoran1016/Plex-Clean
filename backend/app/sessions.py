@@ -25,6 +25,8 @@ class PendingPlexAuth:
     expires_at: float
     next_poll_at: float = 0.0
     poll_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    device_jwt: str | None = field(default=None, repr=False)
+    device_jwt_expires_at: float = 0.0
 
 
 @dataclass(slots=True)

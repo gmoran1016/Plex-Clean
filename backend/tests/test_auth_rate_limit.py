@@ -16,12 +16,11 @@ from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
 import httpx
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 
 from app.auth_storage import PlexCredentialStore, SavedPlexCredential
 from app.config import Settings
 from app.plex.auth import PlexAuthService, PlexResourceService, _json_or_xml
-from app.routes.auth import _same_origin_return_url
 from app.sessions import AppSession, PendingPlexAuth
 
 
@@ -58,40 +57,6 @@ class _FakePlexProbeClient:
 
 
 class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
-    @staticmethod
-    def _auth_request(headers: dict[str, str]) -> Request:
-        return Request(
-            {
-                "type": "http",
-                "http_version": "1.1",
-                "method": "POST",
-                "scheme": "http",
-                "path": "/api/auth/pin",
-                "raw_path": b"/api/auth/pin",
-                "query_string": b"",
-                "headers": [(key.encode(), value.encode()) for key, value in headers.items()],
-                "client": ("127.0.0.1", 50000),
-                "server": ("app.example", 8090),
-            }
-        )
-
-    def test_plex_auth_return_url_uses_the_same_origin(self) -> None:
-        request = self._auth_request(
-            {"host": "app.example:8090", "origin": "http://app.example:8090"}
-        )
-
-        self.assertEqual(_same_origin_return_url(request), "http://app.example:8090")
-
-    def test_plex_auth_return_url_rejects_a_different_origin(self) -> None:
-        request = self._auth_request(
-            {"host": "app.example:8090", "origin": "https://other.example"}
-        )
-
-        with self.assertRaises(HTTPException) as raised:
-            _same_origin_return_url(request)
-
-        self.assertEqual(raised.exception.status_code, 403)
-
     def test_xml_resource_response_preserves_nested_device_connections(self) -> None:
         response = httpx.Response(
             200,
@@ -137,7 +102,7 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         session = AppSession()
 
         with patch("app.plex.auth.httpx.AsyncClient", return_value=plex_client):
-            started = await service.start_pin(session, forward_url="http://app.example:8090")
+            started = await service.start_pin(session)
 
         self.assertIsNotNone(plex_client.requested)
         request_options = plex_client.requested[2]
@@ -150,7 +115,7 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_options["headers"]["X-Plex-Device"], "Browser")
         self.assertEqual(request_options["headers"]["X-Plex-Device-Name"], "Plex-Clean")
         auth_parameters = parse_qs(urlsplit(started.authorization_url).fragment.lstrip("!?"))
-        self.assertTrue(started.authorization_url.startswith("https://app.plex.tv/auth#?"))
+        self.assertTrue(started.authorization_url.startswith("https://app.plex.tv/auth/#!?"))
         self.assertEqual(auth_parameters["clientID"], ["test-client"])
         self.assertEqual(auth_parameters["code"], ["4821"])
         self.assertEqual(auth_parameters["context[device][product]"], ["Plex-Clean"])
@@ -161,7 +126,7 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(auth_parameters["context[device][deviceName]"], ["Plex-Clean"])
         self.assertEqual(auth_parameters["context[device][model]"], ["Web"])
         self.assertEqual(auth_parameters["context[device][layout]"], ["desktop"])
-        self.assertEqual(auth_parameters["forwardUrl"], ["http://app.example:8090"])
+        self.assertNotIn("forwardUrl", auth_parameters)
         self.assertEqual(started.pin_code, "4821")
         self.assertEqual(session.pending_auth.pin_id, 12345)
 
@@ -169,15 +134,19 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         service = PlexAuthService(Settings(Path("."), None, False), "test-client")
         session = AppSession()
         session.pending_auth = PendingPlexAuth(12345, time.time() + 600)
-        request_count = 0
+        nonce_count = 0
+        pin_poll_count = 0
         request_started = asyncio.Event()
         release_request = asyncio.Event()
 
-        async def pending_pin_response(*_: object, **__: object) -> httpx.Response:
-            nonlocal request_count
-            request_count += 1
-            request_started.set()
-            await release_request.wait()
+        async def pending_pin_response(_method: str, url: str, **_: object) -> httpx.Response:
+            nonlocal nonce_count, pin_poll_count
+            if url.endswith("/auth/nonce"):
+                nonce_count += 1
+                request_started.set()
+                await release_request.wait()
+                return httpx.Response(200, json={"nonce": "test-nonce"})
+            pin_poll_count += 1
             return httpx.Response(200, json={})
 
         with patch.object(service, "_request", new=pending_pin_response):
@@ -187,9 +156,41 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
             release_request.set()
             first_status, second_status = await asyncio.gather(first, second)
 
-        self.assertEqual(request_count, 1)
+        self.assertEqual(nonce_count, 1)
+        self.assertEqual(pin_poll_count, 1)
         self.assertTrue(first_status.pending)
         self.assertTrue(second_status.pending)
+
+    async def test_pin_poll_reuses_nonce_jwt_until_near_expiry(self) -> None:
+        service = PlexAuthService(Settings(Path("."), None, False), "test-client")
+        session = AppSession()
+        session.pending_auth = PendingPlexAuth(12345, time.time() + 600)
+        nonce_count = 0
+        pin_poll_count = 0
+
+        async def pending_pin_response(_method: str, url: str, **_: object) -> httpx.Response:
+            nonlocal nonce_count, pin_poll_count
+            if url.endswith("/auth/nonce"):
+                nonce_count += 1
+                return httpx.Response(200, json={"nonce": f"test-nonce-{nonce_count}"})
+            pin_poll_count += 1
+            return httpx.Response(200, json={})
+
+        with patch.object(service, "_request", new=pending_pin_response):
+            await service.poll_pin(session)
+            first_jwt = session.pending_auth.device_jwt
+
+            session.pending_auth.next_poll_at = 0
+            await service.poll_pin(session)
+            self.assertEqual(session.pending_auth.device_jwt, first_jwt)
+
+            session.pending_auth.device_jwt_expires_at = time.time() + 1
+            session.pending_auth.next_poll_at = 0
+            await service.poll_pin(session)
+
+        self.assertEqual(nonce_count, 2)
+        self.assertEqual(pin_poll_count, 3)
+        self.assertNotEqual(session.pending_auth.device_jwt, first_jwt)
 
     async def test_rate_limited_pin_poll_waits_for_plex_retry_after(self) -> None:
         service = PlexAuthService(Settings(Path("."), None, False), "test-client")
@@ -217,28 +218,42 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
             json.dumps({"exp": int(time.time()) + 3600}).encode("utf-8")
         ).rstrip(b"=").decode("ascii")
         returned_token = f"eyJraWQiOiJ0ZXN0In0.{token_payload}.signature"
-        pin_client = _FakeAsyncClient(
-            httpx.Response(
-                200,
-                content=f'<MediaContainer authToken="{returned_token}"/>'.encode("ascii"),
-                headers={"Content-Type": "application/xml"},
-            )
-        )
-        profile_client = _FakeAsyncClient(httpx.Response(200, json={"username": "test-user"}))
         service = PlexAuthService(Settings(Path("."), None, False), "test-client")
         session = AppSession()
         session.pending_auth = PendingPlexAuth(12345, time.time() + 600)
+        requests: list[tuple[str, str, dict[str, object]]] = []
+
+        async def plex_request(method: str, url: str, **kwargs: object) -> httpx.Response:
+            requests.append((method, url, kwargs))
+            if url == "https://clients.plex.tv/api/v2/auth/nonce":
+                return httpx.Response(200, json={"nonce": "test-nonce"})
+            if url == "https://clients.plex.tv/api/v2/pins/12345":
+                return httpx.Response(
+                    200,
+                    content=f'<MediaContainer authToken="{returned_token}"/>'.encode("ascii"),
+                    headers={"Content-Type": "application/xml"},
+                )
+            raise AssertionError(f"Unexpected Plex request: {method} {url}")
+
+        async def load_profile(auth_session: AppSession) -> None:
+            auth_session.username = "test-user"
 
         with (
-            patch("app.plex.auth.httpx.AsyncClient", side_effect=[pin_client, profile_client]),
+            patch.object(service, "_request", new=plex_request),
+            patch.object(service, "_load_account_profile", new=load_profile),
         ):
             status = await service.poll_pin(session)
 
-        self.assertIsNotNone(pin_client.requested)
-        self.assertEqual(pin_client.requested[1], "https://clients.plex.tv/api/v2/pins/12345")
-        self.assertEqual(pin_client.requested[2]["headers"]["Accept"], "application/xml")
-        device_jwt = pin_client.requested[2]["params"]["deviceJWT"]
-        self.assertEqual(device_jwt, service._signed_device_jwt())
+        self.assertEqual(
+            [(method, url) for method, url, _ in requests],
+            [
+                ("GET", "https://clients.plex.tv/api/v2/auth/nonce"),
+                ("GET", "https://clients.plex.tv/api/v2/pins/12345"),
+            ],
+        )
+        pin_request = requests[1][2]
+        self.assertEqual(pin_request["headers"]["Accept"], "application/xml")
+        device_jwt = pin_request["params"]["deviceJWT"]
         header_part, payload_part, signature_part = device_jwt.split(".")
         decode = lambda part: json.loads(
             base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
@@ -254,6 +269,8 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(header["kid"], service.device_key_id)
         self.assertEqual(payload["aud"], "plex.tv")
         self.assertEqual(payload["iss"], "test-client")
+        self.assertEqual(payload["nonce"], "test-nonce")
+        self.assertEqual(payload["scope"], "username")
         self.assertTrue(status.authenticated)
         self.assertIsNone(session.pending_auth)
         self.assertEqual(session.plex_token, returned_token)
