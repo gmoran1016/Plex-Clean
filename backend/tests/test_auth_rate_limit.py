@@ -15,10 +15,11 @@ from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
 import httpx
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from app.config import Settings
 from app.plex.auth import PlexAuthService, PlexResourceService, _json_or_xml
+from app.routes.auth import _same_origin_return_url
 from app.sessions import AppSession, PendingPlexAuth
 
 
@@ -55,6 +56,40 @@ class _FakePlexProbeClient:
 
 
 class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _auth_request(headers: dict[str, str]) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "http_version": "1.1",
+                "method": "POST",
+                "scheme": "http",
+                "path": "/api/auth/pin",
+                "raw_path": b"/api/auth/pin",
+                "query_string": b"",
+                "headers": [(key.encode(), value.encode()) for key, value in headers.items()],
+                "client": ("127.0.0.1", 50000),
+                "server": ("app.example", 8090),
+            }
+        )
+
+    def test_plex_auth_return_url_uses_the_same_origin(self) -> None:
+        request = self._auth_request(
+            {"host": "app.example:8090", "origin": "http://app.example:8090"}
+        )
+
+        self.assertEqual(_same_origin_return_url(request), "http://app.example:8090")
+
+    def test_plex_auth_return_url_rejects_a_different_origin(self) -> None:
+        request = self._auth_request(
+            {"host": "app.example:8090", "origin": "https://other.example"}
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            _same_origin_return_url(request)
+
+        self.assertEqual(raised.exception.status_code, 403)
+
     def test_xml_resource_response_preserves_nested_device_connections(self) -> None:
         response = httpx.Response(
             200,
@@ -100,14 +135,14 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         session = AppSession()
 
         with patch("app.plex.auth.httpx.AsyncClient", return_value=plex_client):
-            started = await service.start_pin(session)
+            started = await service.start_pin(session, forward_url="http://app.example:8090")
 
         self.assertIsNotNone(plex_client.requested)
         request_options = plex_client.requested[2]
         self.assertEqual(plex_client.requested[1], "https://clients.plex.tv/api/v2/pins")
         self.assertEqual(request_options["json"], {"jwk": service._device_jwk(), "strong": True})
         self.assertNotIn("params", request_options)
-        self.assertNotIn("Origin", request_options["headers"])
+        self.assertEqual(request_options["headers"]["Origin"], "http://app.example:8090")
         self.assertEqual(request_options["headers"]["X-Plex-Platform"], "Web")
         self.assertEqual(request_options["headers"]["X-Plex-Platform-Version"], "1.0")
         self.assertEqual(request_options["headers"]["X-Plex-Device"], "Browser")
@@ -124,7 +159,7 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(auth_parameters["context[device][deviceName]"], ["Plex-Clean"])
         self.assertEqual(auth_parameters["context[device][model]"], ["Web"])
         self.assertEqual(auth_parameters["context[device][layout]"], ["desktop"])
-        self.assertNotIn("forwardUrl", auth_parameters)
+        self.assertEqual(auth_parameters["forwardUrl"], ["http://app.example:8090"])
         self.assertEqual(started.pin_code, "4821")
         self.assertEqual(session.pending_auth.pin_id, 12345)
 

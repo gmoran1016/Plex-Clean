@@ -1,6 +1,7 @@
 """Plex authentication and server selection routes."""
 
 import secrets
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -21,12 +22,32 @@ def _auth_service(request: Request) -> PlexAuthService:
     return PlexAuthService(request.app.state.settings, identifier, device_private_key)
 
 
+def _same_origin_return_url(request: Request) -> str:
+    origin = request.headers.get("origin")
+    if not origin:
+        referer = urlsplit(request.headers.get("referer", ""))
+        origin = f"{referer.scheme}://{referer.netloc}" if referer.scheme and referer.netloc else ""
+
+    parsed = urlsplit(origin)
+    expected_host = request.headers.get("host", "").lower()
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.netloc.lower() != expected_host
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise HTTPException(status_code=403, detail="A same-origin Plex sign-in return address is required.")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 @router.post("/auth/pin", response_model=AuthStart)
 async def start_pin(
     request: Request,
     session: AppSession = Depends(require_csrf),
 ) -> AuthStart:
-    return await _auth_service(request).start_pin(session)
+    return await _auth_service(request).start_pin(session, forward_url=_same_origin_return_url(request))
 
 
 @router.get("/auth/status", response_model=AuthStatus)
