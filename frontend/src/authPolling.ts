@@ -5,8 +5,8 @@ export function isPlexAuthReturn(search: string): boolean {
   return new URLSearchParams(search).get("plexAuthReturn") === "1";
 }
 
-export function shouldPollPlexAuth(search: string, authPending: boolean): boolean {
-  return !isPlexAuthReturn(search) && authPending;
+export function shouldPollPlexAuth(authPending: boolean): boolean {
+  return authPending;
 }
 
 export function nextRateLimitedPollDelay(

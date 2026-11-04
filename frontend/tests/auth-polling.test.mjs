@@ -19,8 +19,7 @@ test("recognizes Plex's forwarding return URL", () => {
   assert.equal(authPolling.isPlexAuthReturn?.(""), false);
 });
 
-test("only the original app tab polls a pending Plex PIN", () => {
-  assert.equal(authPolling.shouldPollPlexAuth?.("", true), true);
-  assert.equal(authPolling.shouldPollPlexAuth?.("?plexAuthReturn=1", true), false);
-  assert.equal(authPolling.shouldPollPlexAuth?.("?plexAuthReturn=1", false), false);
+test("each app tab polls a pending PIN", () => {
+  assert.equal(authPolling.shouldPollPlexAuth?.(true), true);
+  assert.equal(authPolling.shouldPollPlexAuth?.(false), false);
 });
