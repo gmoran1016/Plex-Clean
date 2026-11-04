@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets
 import time
@@ -22,6 +23,8 @@ _CREDENTIAL_TOUCH_INTERVAL_SECONDS = 24 * 60 * 60
 class PendingPlexAuth:
     pin_id: int
     expires_at: float
+    next_poll_at: float = 0.0
+    poll_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
 @dataclass(slots=True)

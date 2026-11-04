@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from pathlib import Path
@@ -114,13 +115,60 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(jwk["alg"], "EdDSA")
         self.assertEqual(jwk["kid"], service.device_key_id)
         self.assertTrue(request_options["json"]["strong"])
-        self.assertEqual(request_options["headers"]["Origin"], "https://plexclean.example")
         self.assertEqual(
             started.authorization_url,
-            "https://app.plex.tv/auth#?clientID=test-client&code=4821&context%5Bdevice%5D%5Bproduct%5D=Plex-Clean&forwardUrl=https%3A%2F%2Fplexclean.example",
+            "https://app.plex.tv/auth#?clientID=test-client&code=4821&context%5Bdevice%5D%5Bproduct%5D=Plex-Clean&forwardUrl=https%3A%2F%2Fplexclean.example%2F%3FplexAuthReturn%3D1",
         )
+        self.assertNotIn("Origin", request_options["headers"])
         self.assertEqual(started.pin_code, "4821")
         self.assertEqual(session.pending_auth.pin_id, 12345)
+
+    async def test_parallel_pin_polls_share_one_plex_request(self) -> None:
+        service = PlexAuthService(Settings(Path("."), None, False), "test-client")
+        session = AppSession()
+        session.pending_auth = PendingPlexAuth(12345, time.time() + 600)
+        request_count = 0
+        request_started = asyncio.Event()
+        release_request = asyncio.Event()
+
+        async def pending_pin_response(*_: object, **__: object) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            request_started.set()
+            await release_request.wait()
+            return httpx.Response(200, json={})
+
+        with patch.object(service, "_request", new=pending_pin_response):
+            first = asyncio.create_task(service.poll_pin(session))
+            await request_started.wait()
+            second = asyncio.create_task(service.poll_pin(session))
+            release_request.set()
+            first_status, second_status = await asyncio.gather(first, second)
+
+        self.assertEqual(request_count, 1)
+        self.assertTrue(first_status.pending)
+        self.assertTrue(second_status.pending)
+
+    async def test_rate_limited_pin_poll_waits_for_plex_retry_after(self) -> None:
+        service = PlexAuthService(Settings(Path("."), None, False), "test-client")
+        session = AppSession()
+        session.pending_auth = PendingPlexAuth(12345, time.time() + 600)
+        started_at = time.monotonic()
+        request_count = 0
+
+        async def rate_limited_response(*_: object, **__: object) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            raise HTTPException(status_code=429, headers={"Retry-After": "45"})
+
+        with patch.object(service, "_request", new=rate_limited_response):
+            with self.assertRaises(HTTPException):
+                await service.poll_pin(session)
+            retry_status = await service.poll_pin(session)
+
+        self.assertGreaterEqual(session.pending_auth.next_poll_at, started_at + 44)
+        self.assertEqual(request_count, 1)
+        self.assertTrue(retry_status.pending)
 
     async def test_pin_poll_signs_device_jwt_for_plex_exchange(self) -> None:
         pin_client = _FakeAsyncClient(httpx.Response(200, json={"authToken": "test-plex-token"}))

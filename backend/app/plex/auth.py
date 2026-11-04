@@ -27,6 +27,7 @@ PLEX_API = "https://clients.plex.tv/api/v2"
 PLEX_TV_API = "https://plex.tv/api/v2"
 PLEX_JWT_LIFETIME_SECONDS = 7 * 24 * 60 * 60
 PLEX_JWT_REFRESH_WINDOW_SECONDS = 24 * 60 * 60
+PIN_POLL_INTERVAL_SECONDS = 2.0
 PLEX_AUTH_REJECTED_STATUSES = frozenset({401, 403, 498})
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,11 @@ def _device_access_token(device: dict[str, Any]) -> str | None:
         if value:
             return str(value)
     return None
+
+
+def _auth_return_url(browser_origin: str) -> str:
+    parsed = urlsplit(browser_origin)
+    return urlunsplit((parsed.scheme, parsed.netloc, "/", "plexAuthReturn=1", ""))
 
 
 class PlexAuthService:
@@ -218,7 +224,6 @@ class PlexAuthService:
         response = await self._request(
             "POST",
             f"{PLEX_API}/pins",
-            headers={"Origin": browser_origin},
             json={"jwk": self._device_jwk(), "strong": True},
         )
         payload = _json_or_xml(response)
@@ -253,7 +258,7 @@ class PlexAuthService:
                 "clientID": self.client_identifier,
                 "code": code,
                 "context[device][product]": "Plex-Clean",
-                "forwardUrl": browser_origin,
+                "forwardUrl": _auth_return_url(browser_origin),
             }
         )
         return AuthStart(
@@ -266,27 +271,51 @@ class PlexAuthService:
         pending = session.pending_auth
         if pending is None:
             return AuthStatus(authenticated=session.authenticated, pending=False, username=session.username)
-        if pending.expires_at <= time.time():
+        async with pending.poll_lock:
+            if session.pending_auth is not pending:
+                return AuthStatus(
+                    authenticated=session.authenticated,
+                    pending=session.pending_auth is not None,
+                    username=session.username,
+                )
+            if pending.expires_at <= time.time():
+                session.pending_auth = None
+                return AuthStatus(pending=False, message="Plex sign-in PIN expired. Start again to get a new PIN.")
+
+            now = time.monotonic()
+            if now < pending.next_poll_at:
+                return AuthStatus(pending=True)
+            pending.next_poll_at = now + PIN_POLL_INTERVAL_SECONDS
+            try:
+                response = await self._request(
+                    "GET",
+                    f"{PLEX_API}/pins/{pending.pin_id}",
+                    params={"deviceJWT": self._signed_device_jwt()},
+                )
+            except HTTPException as exc:
+                if exc.status_code == 429:
+                    retry_after = (exc.headers or {}).get("Retry-After")
+                    try:
+                        delay = float(retry_after) if retry_after is not None else 60.0
+                    except ValueError:
+                        delay = 60.0
+                    if not math.isfinite(delay):
+                        delay = 60.0
+                    pending.next_poll_at = time.monotonic() + max(1.0, delay)
+                raise
+
+            payload = _json_or_xml(response)
+            token = payload.get("authToken") or payload.get("auth_token")
+            if not token:
+                return AuthStatus(pending=True)
+
+            session.plex_token = str(token)
+            session.plex_token_expires_at = _jwt_expiration(session.plex_token) or (
+                time.time() + PLEX_JWT_LIFETIME_SECONDS
+            )
             session.pending_auth = None
-            return AuthStatus(pending=False, message="Plex sign-in PIN expired. Start again to get a new PIN.")
-
-        response = await self._request(
-            "GET",
-            f"{PLEX_API}/pins/{pending.pin_id}",
-            params={"deviceJWT": self._signed_device_jwt()},
-        )
-        payload = _json_or_xml(response)
-        token = payload.get("authToken") or payload.get("auth_token")
-        if not token:
-            return AuthStatus(pending=True)
-
-        session.plex_token = str(token)
-        session.plex_token_expires_at = _jwt_expiration(session.plex_token) or (
-            time.time() + PLEX_JWT_LIFETIME_SECONDS
-        )
-        session.pending_auth = None
-        await self._load_account_profile(session)
-        return AuthStatus(authenticated=True, pending=False, username=session.username)
+            await self._load_account_profile(session)
+            return AuthStatus(authenticated=True, pending=False, username=session.username)
 
     async def _account_request(
         self,
