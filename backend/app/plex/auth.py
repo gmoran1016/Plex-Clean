@@ -214,10 +214,11 @@ class PlexAuthService:
             )
         return response
 
-    async def start_pin(self, session: AppSession) -> AuthStart:
+    async def start_pin(self, session: AppSession, *, browser_origin: str) -> AuthStart:
         response = await self._request(
             "POST",
             f"{PLEX_API}/pins",
+            headers={"Origin": browser_origin},
             json={"jwk": self._device_jwk(), "strong": True},
         )
         payload = _json_or_xml(response)
@@ -252,6 +253,7 @@ class PlexAuthService:
                 "clientID": self.client_identifier,
                 "code": code,
                 "context[device][product]": "Plex-Clean",
+                "forwardUrl": browser_origin,
             }
         )
         return AuthStart(
