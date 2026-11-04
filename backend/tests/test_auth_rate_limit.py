@@ -17,6 +17,7 @@ from unittest.mock import patch
 import httpx
 from fastapi import HTTPException, Request
 
+from app.auth_storage import PlexCredentialStore, SavedPlexCredential
 from app.config import Settings
 from app.plex.auth import PlexAuthService, PlexResourceService, _json_or_xml
 from app.routes.auth import _same_origin_return_url
@@ -542,6 +543,74 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first_public, second_public)
         self.assertEqual(mode, 0)
+
+    def test_auth_identity_migration_uses_a_fresh_stable_pair_without_saved_logins(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Settings(Path(directory), None, False)
+            previous_client_id = settings.load_or_create_client_identifier()
+            previous_key = settings.load_or_create_plex_device_key()
+            credentials = PlexCredentialStore(Path(directory))
+
+            client_id, key = settings.load_or_create_plex_auth_identity(
+                preserve_existing_identity=credentials.has_saved_credentials()
+            )
+            restarted_client_id, restarted_key = settings.load_or_create_plex_auth_identity(
+                preserve_existing_identity=credentials.has_saved_credentials()
+            )
+
+            previous_public_key = previous_key.public_key().public_bytes(
+                serialization.Encoding.Raw,
+                serialization.PublicFormat.Raw,
+            )
+            public_key = key.public_key().public_bytes(
+                serialization.Encoding.Raw,
+                serialization.PublicFormat.Raw,
+            )
+            restarted_public_key = restarted_key.public_key().public_bytes(
+                serialization.Encoding.Raw,
+                serialization.PublicFormat.Raw,
+            )
+
+        self.assertNotEqual(client_id, previous_client_id)
+        self.assertNotEqual(public_key, previous_public_key)
+        self.assertEqual(restarted_client_id, client_id)
+        self.assertEqual(restarted_public_key, public_key)
+
+    def test_auth_identity_migration_preserves_identity_with_saved_browser_logins(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Settings(Path(directory), None, False)
+            client_id = settings.load_or_create_client_identifier()
+            key = settings.load_or_create_plex_device_key()
+            credentials = PlexCredentialStore(Path(directory))
+            credentials.save(
+                "A" * 43,
+                SavedPlexCredential("saved-token", None, "test-user", time.time()),
+            )
+
+            selected_client_id, selected_key = settings.load_or_create_plex_auth_identity(
+                preserve_existing_identity=credentials.has_saved_credentials()
+            )
+            restarted_client_id, restarted_key = settings.load_or_create_plex_auth_identity(
+                preserve_existing_identity=False
+            )
+
+            public_key = key.public_key().public_bytes(
+                serialization.Encoding.Raw,
+                serialization.PublicFormat.Raw,
+            )
+            selected_public_key = selected_key.public_key().public_bytes(
+                serialization.Encoding.Raw,
+                serialization.PublicFormat.Raw,
+            )
+            restarted_public_key = restarted_key.public_key().public_bytes(
+                serialization.Encoding.Raw,
+                serialization.PublicFormat.Raw,
+            )
+
+        self.assertEqual(selected_client_id, client_id)
+        self.assertEqual(selected_public_key, public_key)
+        self.assertEqual(restarted_client_id, client_id)
+        self.assertEqual(restarted_public_key, public_key)
 
 
 if __name__ == "__main__":

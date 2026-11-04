@@ -26,9 +26,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        app.state.plex_client_identifier = app_settings.load_or_create_client_identifier()
-        app.state.plex_device_private_key = app_settings.load_or_create_plex_device_key()
         app.state.plex_credential_store.prune(time.time())
+        (
+            app.state.plex_client_identifier,
+            app.state.plex_device_private_key,
+        ) = app_settings.load_or_create_plex_auth_identity(
+            preserve_existing_identity=app.state.plex_credential_store.has_saved_credentials()
+        )
         yield
 
     app = FastAPI(title="Plex-Clean", version="0.1.0", lifespan=lifespan)
