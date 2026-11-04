@@ -19,7 +19,11 @@ async def delete_version(
     confirmation: DeleteVersionRequest,
     session: AppSession = Depends(require_csrf),
 ) -> DeleteResult:
-    auth = PlexAuthService(request.app.state.settings, request.app.state.plex_client_identifier)
+    auth = PlexAuthService(
+        request.app.state.settings,
+        request.app.state.plex_client_identifier,
+        request.app.state.plex_device_private_key,
+    )
     return await DeletionService(PlexClient(auth)).delete_version(
         session,
         rating_key,

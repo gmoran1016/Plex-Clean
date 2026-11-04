@@ -50,7 +50,10 @@ async def auth_status(
 
 
 @router.post("/auth/logout", status_code=204)
-def logout(session: AppSession = Depends(require_csrf)) -> None:
+def logout(request: Request, session: AppSession = Depends(require_csrf)) -> None:
+    session_id = getattr(request.state, "app_session_id", None)
+    if isinstance(session_id, str):
+        request.app.state.plex_credential_store.delete(session_id)
     session.clear_sensitive()
     session.csrf_token = secrets.token_urlsafe(32)
 

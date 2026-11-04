@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -11,7 +12,10 @@ from urllib.parse import urlsplit
 
 from fastapi import Depends, HTTPException, Request
 
+from app.auth_storage import PlexCredentialStore, SavedPlexCredential, is_valid_session_id
 from app.models import DuplicateGroup, IdentityCandidate, LibrarySummary, ScanProgress, ServerOption
+
+_CREDENTIAL_TOUCH_INTERVAL_SECONDS = 24 * 60 * 60
 
 
 @dataclass(slots=True)
@@ -38,6 +42,8 @@ class AppSession:
     pending_auth: PendingPlexAuth | None = None
     plex_token: str | None = None
     plex_token_expires_at: float | None = None
+    persisted_token_fingerprint: str | None = None
+    persisted_credential_saved_at: float | None = None
     username: str | None = None
     server_options: list[ServerOption] = field(default_factory=list)
     server_access: dict[str, ServerAccess] = field(default_factory=dict)
@@ -66,15 +72,10 @@ class AppSession:
             None,
         )
 
-    def clear_sensitive(self) -> None:
+    def clear_server_state(self) -> None:
         task = self.scan_task
         if task is not None and hasattr(task, "cancel"):
             task.cancel()
-        self.client_identifier = None
-        self.pending_auth = None
-        self.plex_token = None
-        self.plex_token_expires_at = None
-        self.username = None
         self.server_access.clear()
         self.server_options.clear()
         self.selected_server_id = None
@@ -85,10 +86,23 @@ class AppSession:
         self.poster_paths.clear()
         self.scan_task = None
 
+    def clear_sensitive(self) -> None:
+        self.client_identifier = None
+        self.pending_auth = None
+        self.plex_token = None
+        self.plex_token_expires_at = None
+        self.username = None
+        self.clear_server_state()
+
 
 class SessionStore:
-    def __init__(self, idle_timeout_seconds: int = 24 * 60 * 60) -> None:
+    def __init__(
+        self,
+        idle_timeout_seconds: int = 24 * 60 * 60,
+        credentials: PlexCredentialStore | None = None,
+    ) -> None:
         self._idle_timeout_seconds = idle_timeout_seconds
+        self._credentials = credentials
         self._sessions: dict[str, AppSession] = {}
         self._lock = RLock()
 
@@ -106,16 +120,65 @@ class SessionStore:
         now = time.monotonic()
         with self._lock:
             self._remove_expired(now)
-            if cookie_value is not None:
+            if is_valid_session_id(cookie_value):
                 session = self._sessions.get(cookie_value)
                 if session is not None:
                     session.last_activity = now
+                    return cookie_value, session
+
+                saved = self._credentials.load(cookie_value) if self._credentials is not None else None
+                if saved is not None:
+                    session = AppSession(last_activity=now)
+                    session.plex_token = saved.token
+                    session.plex_token_expires_at = saved.expires_at
+                    session.username = saved.username
+                    session.persisted_token_fingerprint = self._token_fingerprint(saved.token)
+                    session.persisted_credential_saved_at = saved.saved_at
+                    self._sessions[cookie_value] = session
                     return cookie_value, session
 
             session_id = secrets.token_urlsafe(32)
             session = AppSession(last_activity=now)
             self._sessions[session_id] = session
             return session_id, session
+
+    @staticmethod
+    def _token_fingerprint(token: str | None) -> str | None:
+        if token is None:
+            return None
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def persist_authentication_if_needed(self, session_id: str, session: AppSession) -> None:
+        if self._credentials is None or not is_valid_session_id(session_id):
+            return
+        fingerprint = self._token_fingerprint(session.plex_token)
+        if session.plex_token is None:
+            if session.persisted_token_fingerprint is None:
+                return
+            self._credentials.delete(session_id)
+            session.persisted_token_fingerprint = None
+            session.persisted_credential_saved_at = None
+            return
+
+        now = time.time()
+        token_changed = fingerprint != session.persisted_token_fingerprint
+        touch_due = (
+            session.persisted_credential_saved_at is None
+            or now - session.persisted_credential_saved_at >= _CREDENTIAL_TOUCH_INTERVAL_SECONDS
+        )
+        if not token_changed and not touch_due:
+            return
+        self._credentials.save(
+            session_id,
+            SavedPlexCredential(
+                token=session.plex_token,
+                expires_at=session.plex_token_expires_at,
+                username=session.username,
+                saved_at=now,
+            ),
+        )
+        session.persisted_token_fingerprint = fingerprint
+        session.persisted_credential_saved_at = now
 
     def get(self, session_id: str) -> AppSession | None:
         now = time.monotonic()
