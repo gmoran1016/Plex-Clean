@@ -119,7 +119,7 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
             started.authorization_url,
             "https://app.plex.tv/auth#?clientID=test-client&code=4821&context%5Bdevice%5D%5Bproduct%5D=Plex-Clean&forwardUrl=https%3A%2F%2Fplexclean.example%2F%3FplexAuthReturn%3D1",
         )
-        self.assertNotIn("Origin", request_options["headers"])
+        self.assertEqual(request_options["headers"]["Origin"], "https://plexclean.example")
         self.assertEqual(started.pin_code, "4821")
         self.assertEqual(session.pending_auth.pin_id, 12345)
 
