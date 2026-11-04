@@ -1,7 +1,6 @@
 """Plex authentication and server selection routes."""
 
 import secrets
-from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -10,27 +9,6 @@ from app.plex.auth import PlexAuthService, PlexResourceService
 from app.sessions import AppSession, get_current_session, require_csrf
 
 router = APIRouter(prefix="/api", tags=["auth"])
-
-
-def _browser_origin(request: Request) -> str:
-    origin = request.headers.get("origin")
-    is_referer = not origin
-    candidate = origin or request.headers.get("referer") or ""
-    try:
-        parsed = urlsplit(candidate)
-        parsed.port  # Force malformed ports to fail validation.
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Could not determine the Plex-Clean browser origin.") from exc
-    if (
-        parsed.scheme.lower() not in {"http", "https"}
-        or not parsed.netloc
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or (not is_referer and (parsed.path not in {"", "/"} or parsed.query or parsed.fragment))
-    ):
-        raise HTTPException(status_code=400, detail="Could not determine the Plex-Clean browser origin.")
-    return urlunsplit((parsed.scheme.lower(), parsed.netloc, "", "", ""))
 
 
 def _auth_service(request: Request) -> PlexAuthService:
@@ -48,7 +26,7 @@ async def start_pin(
     request: Request,
     session: AppSession = Depends(require_csrf),
 ) -> AuthStart:
-    return await _auth_service(request).start_pin(session, browser_origin=_browser_origin(request))
+    return await _auth_service(request).start_pin(session)
 
 
 @router.get("/auth/status", response_model=AuthStatus)
