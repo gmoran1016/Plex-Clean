@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -143,7 +144,7 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plex_client.requested[1], "https://clients.plex.tv/api/v2/pins")
         self.assertEqual(request_options["json"], {"jwk": service._device_jwk(), "strong": True})
         self.assertNotIn("params", request_options)
-        self.assertEqual(request_options["headers"]["Origin"], "http://app.example:8090")
+        self.assertNotIn("Origin", request_options["headers"])
         self.assertEqual(request_options["headers"]["X-Plex-Platform"], "Web")
         self.assertEqual(request_options["headers"]["X-Plex-Platform-Version"], "1.0")
         self.assertEqual(request_options["headers"]["X-Plex-Device"], "Browser")
@@ -542,7 +543,8 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
             mode = key_path.stat().st_mode & 0o077
 
         self.assertEqual(first_public, second_public)
-        self.assertEqual(mode, 0)
+        if os.name == "posix":
+            self.assertEqual(mode, 0)
 
     def test_auth_identity_migration_uses_a_fresh_stable_pair_without_saved_logins(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

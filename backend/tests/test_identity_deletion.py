@@ -172,8 +172,10 @@ class IdentityDeletionTests(unittest.IsolatedAsyncioTestCase):
         fake = FakePlexClient([])
 
         with tempfile.TemporaryDirectory() as directory:
-            app = create_app(Settings(Path(directory), None, False))
+            settings = Settings(Path(directory), None, False)
+            app = create_app(settings)
             app.state.plex_client_identifier = "test-client"
+            app.state.plex_device_private_key = settings.load_or_create_plex_device_key()
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 await client.get("/api/session")

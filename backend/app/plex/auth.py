@@ -222,7 +222,6 @@ class PlexAuthService:
         response = await self._request(
             "POST",
             f"{PLEX_API}/pins",
-            headers={"Origin": forward_url},
             json={"jwk": self._device_jwk(), "strong": True},
         )
         payload = _json_or_xml(response)
