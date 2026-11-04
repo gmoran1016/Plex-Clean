@@ -51,7 +51,58 @@ class Settings:
     def load_or_create_client_identifier(self) -> str:
         """Return a stable UUID stored under the non-secret config directory."""
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        path = self.config_dir / "plex-client-id"
+        return self._load_or_create_client_identifier_at(
+            self.config_dir / "plex-client-id"
+        )
+
+    def load_or_create_plex_auth_identity(
+        self,
+        *,
+        preserve_existing_identity: bool,
+    ) -> tuple[str, Ed25519PrivateKey]:
+        """Load the selected Plex identity, upgrading unauthenticated installs once."""
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        marker = self.config_dir / "plex-auth-identity-version"
+        version = self._load_or_create_auth_identity_version(
+            marker,
+            preserve_existing_identity=preserve_existing_identity,
+        )
+        if version == "1":
+            return self.load_or_create_client_identifier(), self.load_or_create_plex_device_key()
+        return (
+            self._load_or_create_client_identifier_at(self.config_dir / "plex-client-id-v2"),
+            self._load_or_create_plex_device_key_at(
+                self.config_dir / "plex-device-ed25519-v2.pem"
+            ),
+        )
+
+    @staticmethod
+    def _load_or_create_auth_identity_version(
+        path: Path,
+        *,
+        preserve_existing_identity: bool,
+    ) -> str:
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            version = path.read_text(encoding="ascii").strip()
+            if version not in {"1", "2"}:
+                raise RuntimeError(f"Plex auth identity version file is invalid: {path}")
+            return version
+
+        version = "1" if preserve_existing_identity else "2"
+        try:
+            with os.fdopen(descriptor, "w", encoding="ascii") as version_file:
+                version_file.write(version + "\n")
+                version_file.flush()
+                os.fsync(version_file.fileno())
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+        return version
+
+    @staticmethod
+    def _load_or_create_client_identifier_at(path: Path) -> str:
         try:
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
@@ -77,7 +128,12 @@ class Settings:
     def load_or_create_plex_device_key(self) -> Ed25519PrivateKey:
         """Load the app's stable Ed25519 signing key from its private config volume."""
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        path = self.config_dir / "plex-device-ed25519.pem"
+        return self._load_or_create_plex_device_key_at(
+            self.config_dir / "plex-device-ed25519.pem"
+        )
+
+    @staticmethod
+    def _load_or_create_plex_device_key_at(path: Path) -> Ed25519PrivateKey:
         try:
             encoded = path.read_bytes()
         except FileNotFoundError:

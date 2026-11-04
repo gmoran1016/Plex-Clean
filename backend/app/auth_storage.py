@@ -36,6 +36,16 @@ class PlexCredentialStore:
     def __init__(self, config_dir: Path) -> None:
         self.directory = config_dir / "plex-sessions"
 
+    def has_saved_credentials(self) -> bool:
+        """Return whether any browser login must keep its current Plex app identity."""
+        try:
+            return any(
+                path.is_file() and path.suffix == ".json"
+                for path in self.directory.iterdir()
+            )
+        except FileNotFoundError:
+            return False
+
     @staticmethod
     def _finite_number(value: Any) -> float | None:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
