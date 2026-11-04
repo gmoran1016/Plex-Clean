@@ -120,7 +120,7 @@ export default function App() {
     [libraries, selectedLibraryId],
   );
   const authPending = Boolean(session?.auth_pending || loginInitiated);
-  const authWatching = shouldPollPlexAuth(window.location.search, authPending);
+  const authWatching = shouldPollPlexAuth(authPending);
 
   useEffect(() => {
     bulkSelectionRequest.current += 1;
@@ -145,6 +145,11 @@ export default function App() {
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, []);
+
+  useEffect(() => {
+    if (!isAuthReturn || !session?.authenticated) return;
+    window.location.replace(window.location.pathname || "/");
+  }, [isAuthReturn, session?.authenticated]);
 
   useEffect(() => {
     let alive = true;

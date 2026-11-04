@@ -1,7 +1,6 @@
 """Plex authentication and server selection routes."""
 
 import secrets
-from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -22,20 +21,12 @@ def _auth_service(request: Request) -> PlexAuthService:
     return PlexAuthService(request.app.state.settings, identifier, device_private_key)
 
 
-def _browser_origin(request: Request) -> str:
-    origin = request.headers.get("origin") or request.headers.get("referer")
-    parsed = urlsplit(origin or "")
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
-        raise HTTPException(status_code=400, detail="Could not determine the browser address for Plex sign-in.")
-    return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
-
-
 @router.post("/auth/pin", response_model=AuthStart)
 async def start_pin(
     request: Request,
     session: AppSession = Depends(require_csrf),
 ) -> AuthStart:
-    return await _auth_service(request).start_pin(session, browser_origin=_browser_origin(request))
+    return await _auth_service(request).start_pin(session)
 
 
 @router.get("/auth/status", response_model=AuthStatus)
