@@ -1,8 +1,10 @@
 const MIN_RATE_LIMIT_DELAY_MS = 60_000;
 const MAX_RATE_LIMIT_DELAY_MS = 5 * 60_000;
 
-export function isPlexAuthReturn(search: string): boolean {
-  return new URLSearchParams(search).get("plexAuthReturn") === "1";
+export function openPlexAuthPopup<T>(
+  openWindow: (url: string, target: string, features: string) => T | null,
+): T | null {
+  return openWindow("about:blank", "plex-clean-plex-auth", "popup=yes,width=600,height=700");
 }
 
 export function shouldPollPlexAuth(authPending: boolean): boolean {

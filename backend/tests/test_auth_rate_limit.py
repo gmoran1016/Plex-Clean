@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
 from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import time
 import tempfile
-from types import SimpleNamespace
 import unittest
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
@@ -18,7 +15,6 @@ from unittest.mock import patch
 import httpx
 from fastapi import HTTPException
 
-from app.routes import auth as auth_routes
 from app.config import Settings
 from app.plex.auth import PlexAuthService, PlexResourceService, _json_or_xml
 from app.sessions import AppSession, PendingPlexAuth
@@ -57,16 +53,6 @@ class _FakePlexProbeClient:
 
 
 class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
-    def test_browser_origin_uses_the_same_origin_from_referer(self) -> None:
-        request = SimpleNamespace(
-            headers={"referer": "https://plex-clean.example:8443/review?tab=duplicates"}
-        )
-
-        self.assertEqual(
-            auth_routes._browser_origin(request),
-            "https://plex-clean.example:8443",
-        )
-
     def test_xml_resource_response_preserves_nested_device_connections(self) -> None:
         response = httpx.Response(
             200,
@@ -105,39 +91,38 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 429)
         self.assertEqual(raised.exception.headers, {"Retry-After": "45"})
 
-    async def test_strong_pin_auth_forwards_back_to_the_same_browser_origin(self) -> None:
+    async def test_strong_pin_auth_uses_tautulli_compatible_popup_flow(self) -> None:
         response = httpx.Response(200, json={"id": 12345, "code": "4821", "expiresIn": 600})
         plex_client = _FakeAsyncClient(response)
         service = PlexAuthService(Settings(Path("."), None, False), "test-client")
         session = AppSession()
-        browser_origin = "http://plex-clean.example:8090"
 
         with patch("app.plex.auth.httpx.AsyncClient", return_value=plex_client):
-            started = await service.start_pin(session, browser_origin=browser_origin)
+            started = await service.start_pin(session)
 
         self.assertIsNotNone(plex_client.requested)
         request_options = plex_client.requested[2]
-        self.assertEqual(plex_client.requested[1], "https://clients.plex.tv/api/v2/pins")
-        jwk = request_options["json"]["jwk"]
-        public_bytes = service.device_private_key.public_key().public_bytes(
-            serialization.Encoding.Raw,
-            serialization.PublicFormat.Raw,
-        )
-        self.assertEqual(jwk["kty"], "OKP")
-        self.assertEqual(jwk["crv"], "Ed25519")
-        self.assertEqual(jwk["x"], service._base64url(public_bytes))
-        self.assertEqual(jwk["alg"], "EdDSA")
-        self.assertEqual(jwk["kid"], service.device_key_id)
-        self.assertTrue(request_options["json"]["strong"])
-        auth_parameters = parse_qs(urlsplit(started.authorization_url).fragment.lstrip("?"))
+        self.assertEqual(plex_client.requested[1], "https://plex.tv/api/v2/pins")
+        self.assertEqual(request_options["params"], {"strong": "true"})
+        self.assertNotIn("json", request_options)
+        self.assertNotIn("Origin", request_options["headers"])
+        self.assertEqual(request_options["headers"]["X-Plex-Platform"], "Web")
+        self.assertEqual(request_options["headers"]["X-Plex-Platform-Version"], "1.0")
+        self.assertEqual(request_options["headers"]["X-Plex-Device"], "Browser")
+        self.assertEqual(request_options["headers"]["X-Plex-Device-Name"], "Plex-Clean")
+        auth_parameters = parse_qs(urlsplit(started.authorization_url).fragment.lstrip("!?"))
+        self.assertTrue(started.authorization_url.startswith("https://app.plex.tv/auth/#!?"))
         self.assertEqual(auth_parameters["clientID"], ["test-client"])
         self.assertEqual(auth_parameters["code"], ["4821"])
         self.assertEqual(auth_parameters["context[device][product]"], ["Plex-Clean"])
-        self.assertEqual(
-            auth_parameters["forwardUrl"],
-            ["http://plex-clean.example:8090/?plexAuthReturn=1"],
-        )
-        self.assertEqual(request_options["headers"]["Origin"], browser_origin)
+        self.assertEqual(auth_parameters["context[device][version]"], ["0.1.0"])
+        self.assertEqual(auth_parameters["context[device][platform]"], ["Web"])
+        self.assertEqual(auth_parameters["context[device][platformVersion]"], ["1.0"])
+        self.assertEqual(auth_parameters["context[device][device]"], ["Browser"])
+        self.assertEqual(auth_parameters["context[device][deviceName]"], ["Plex-Clean"])
+        self.assertEqual(auth_parameters["context[device][model]"], ["Web"])
+        self.assertEqual(auth_parameters["context[device][layout]"], ["desktop"])
+        self.assertNotIn("forwardUrl", auth_parameters)
         self.assertEqual(started.pin_code, "4821")
         self.assertEqual(session.pending_auth.pin_id, 12345)
 
@@ -188,7 +173,7 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_count, 1)
         self.assertTrue(retry_status.pending)
 
-    async def test_pin_poll_signs_device_jwt_for_plex_exchange(self) -> None:
+    async def test_pin_poll_returns_a_legacy_token_without_a_device_jwt(self) -> None:
         pin_client = _FakeAsyncClient(httpx.Response(200, json={"authToken": "test-plex-token"}))
         profile_client = _FakeAsyncClient(httpx.Response(200, json={"username": "test-user"}))
         service = PlexAuthService(Settings(Path("."), None, False), "test-client")
@@ -201,22 +186,12 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
             status = await service.poll_pin(session)
 
         self.assertIsNotNone(pin_client.requested)
-        self.assertEqual(pin_client.requested[1], "https://clients.plex.tv/api/v2/pins/12345")
-        device_jwt = pin_client.requested[2]["params"]["deviceJWT"]
-        header_part, payload_part, signature_part = device_jwt.split(".")
-        decode = lambda value: base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-        header = json.loads(decode(header_part))
-        payload = json.loads(decode(payload_part))
-        self.assertEqual(header["alg"], "EdDSA")
-        self.assertEqual(header["kid"], service.device_key_id)
-        self.assertEqual(payload["aud"], "plex.tv")
-        self.assertEqual(payload["iss"], "test-client")
-        public_key = service.device_private_key.public_key()
-        public_key.verify(decode(signature_part), f"{header_part}.{payload_part}".encode("ascii"))
+        self.assertEqual(pin_client.requested[1], "https://plex.tv/api/v2/pins/12345")
+        self.assertNotIn("params", pin_client.requested[2])
         self.assertTrue(status.authenticated)
         self.assertIsNone(session.pending_auth)
         self.assertEqual(session.plex_token, "test-plex-token")
-        self.assertGreater(session.plex_token_expires_at or 0, time.time() + 23 * 60 * 60)
+        self.assertIsNone(session.plex_token_expires_at)
 
     async def test_account_profile_uses_plex_tv_api_host(self) -> None:
         response = httpx.Response(200, json={"username": "test-user"})

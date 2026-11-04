@@ -32,11 +32,6 @@ PLEX_AUTH_REJECTED_STATUSES = frozenset({401, 403, 498})
 logger = logging.getLogger(__name__)
 
 
-def _auth_return_url(browser_origin: str) -> str:
-    parsed = urlsplit(browser_origin)
-    return urlunsplit((parsed.scheme, parsed.netloc, "/", "plexAuthReturn=1", ""))
-
-
 def _json_or_xml(response: httpx.Response) -> dict[str, Any]:
     try:
         value = response.json()
@@ -193,6 +188,11 @@ class PlexAuthService:
                 "X-Plex-Client-Identifier": self.client_identifier,
                 "X-Plex-Product": "Plex-Clean",
                 "X-Plex-Version": "0.1.0",
+                "X-Plex-Platform": "Web",
+                "X-Plex-Platform-Version": "1.0",
+                "X-Plex-Device": "Browser",
+                "X-Plex-Device-Name": "Plex-Clean",
+                "X-Plex-Model": "Web",
             }
         )
         try:
@@ -220,12 +220,11 @@ class PlexAuthService:
             )
         return response
 
-    async def start_pin(self, session: AppSession, *, browser_origin: str) -> AuthStart:
+    async def start_pin(self, session: AppSession) -> AuthStart:
         response = await self._request(
             "POST",
-            f"{PLEX_API}/pins",
-            headers={"Origin": browser_origin},
-            json={"jwk": self._device_jwk(), "strong": True},
+            f"{PLEX_TV_API}/pins",
+            params={"strong": "true"},
         )
         payload = _json_or_xml(response)
         try:
@@ -257,13 +256,19 @@ class PlexAuthService:
         authorization_parameters = urlencode(
             {
                 "clientID": self.client_identifier,
-                "code": code,
                 "context[device][product]": "Plex-Clean",
-                "forwardUrl": _auth_return_url(browser_origin),
+                "context[device][version]": "0.1.0",
+                "context[device][platform]": "Web",
+                "context[device][platformVersion]": "1.0",
+                "context[device][device]": "Browser",
+                "context[device][deviceName]": "Plex-Clean",
+                "context[device][model]": "Web",
+                "context[device][layout]": "desktop",
+                "code": code,
             }
         )
         return AuthStart(
-            authorization_url=f"https://app.plex.tv/auth#?{authorization_parameters}",
+            authorization_url=f"https://app.plex.tv/auth/#!?{authorization_parameters}",
             pin_code=code,
             expires_at=datetime.fromtimestamp(expiry, tz=UTC),
         )
@@ -290,8 +295,7 @@ class PlexAuthService:
             try:
                 response = await self._request(
                     "GET",
-                    f"{PLEX_API}/pins/{pending.pin_id}",
-                    params={"deviceJWT": self._signed_device_jwt()},
+                    f"{PLEX_TV_API}/pins/{pending.pin_id}",
                 )
             except HTTPException as exc:
                 if exc.status_code == 429:
@@ -311,9 +315,7 @@ class PlexAuthService:
                 return AuthStatus(pending=True)
 
             session.plex_token = str(token)
-            session.plex_token_expires_at = _jwt_expiration(session.plex_token) or (
-                time.time() + PLEX_JWT_LIFETIME_SECONDS
-            )
+            session.plex_token_expires_at = _jwt_expiration(session.plex_token)
             session.pending_auth = None
             await self._load_account_profile(session)
             return AuthStatus(authenticated=True, pending=False, username=session.username)
@@ -370,6 +372,8 @@ class PlexAuthService:
     async def refresh_if_needed(self, session: AppSession) -> None:
         if not session.plex_token:
             raise HTTPException(status_code=401, detail="Plex sign-in expired. Sign in again.")
+        if not _is_jwt_token(session.plex_token):
+            return
         now = time.time()
         expires_at = session.plex_token_expires_at or _jwt_expiration(session.plex_token)
         if expires_at is None:

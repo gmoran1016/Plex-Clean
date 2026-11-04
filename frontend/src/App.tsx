@@ -7,7 +7,7 @@ import DuplicateList from "./components/DuplicateList";
 import IdentityCandidateList from "./components/IdentityCandidateList";
 import LibrarySidebar from "./components/LibrarySidebar";
 import ScanStatus from "./components/ScanStatus";
-import { isPlexAuthReturn, nextRateLimitedPollDelay, shouldPollPlexAuth } from "./authPolling";
+import { nextRateLimitedPollDelay, openPlexAuthPopup, shouldPollPlexAuth } from "./authPolling";
 import { pollScanUpdate } from "./scanPolling";
 import type { DeleteVersionConfirmation, DuplicateGroup, ExternalMediaId, IdentityCandidate, LibrarySummary, MediaVersion, ScanProgress, ServerOption, SessionStatus } from "./types";
 
@@ -72,7 +72,6 @@ type DeleteTarget = { group: DuplicateGroup; version: MediaVersion; confirmation
 type BulkDeleteTarget = BulkDeleteItem & { confirmation: DeleteVersionConfirmation };
 
 export default function App() {
-  const isAuthReturn = isPlexAuthReturn(window.location.search);
   const [session, setSession] = useState<SessionStatus | null>(null);
   const [servers, setServers] = useState<ServerOption[]>([]);
   const [libraries, setLibraries] = useState<LibrarySummary[]>([]);
@@ -105,6 +104,12 @@ export default function App() {
   const [bulkProgress, setBulkProgress] = useState(0);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const bulkSelectionRequest = useRef(0);
+  const authPopupRef = useRef<WindowProxy | null>(null);
+  const closeAuthPopup = useCallback(() => {
+    const popup = authPopupRef.current;
+    authPopupRef.current = null;
+    if (popup && !popup.closed) popup.close();
+  }, []);
 
   const selectedServerId = session?.selected_server?.machine_identifier ?? null;
   const selectedLibrary = useMemo(
@@ -137,11 +142,6 @@ export default function App() {
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, []);
-
-  useEffect(() => {
-    if (!isAuthReturn || !session?.authenticated) return;
-    window.location.replace(window.location.pathname || "/");
-  }, [isAuthReturn, session?.authenticated]);
 
   useEffect(() => {
     let alive = true;
@@ -198,7 +198,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (isAuthReturn || !session?.authenticated) return;
+    if (!session?.authenticated) return;
     let alive = true;
     setServersLoading(true);
     api.getServers()
@@ -231,10 +231,13 @@ export default function App() {
         setError(null);
         if (status.authenticated) {
           rateLimitDelayMs = 0;
-          setLoginInitiated(false);
-          setNotice(status.message);
           const updated = await api.getSession();
-          if (alive) setSession(updated);
+          if (alive) {
+            setSession(updated);
+            setLoginInitiated(false);
+            setNotice(status.message);
+            closeAuthPopup();
+          }
           return;
         }
         if (!status.pending) {
@@ -244,6 +247,7 @@ export default function App() {
           setSession(updated);
           setLoginInitiated(false);
           setNotice(status.message);
+          closeAuthPopup();
           return;
         }
       } catch (reason) {
@@ -257,6 +261,7 @@ export default function App() {
                 setError(null);
                 setSession(updated);
                 setLoginInitiated(false);
+                closeAuthPopup();
                 return;
               }
             } catch { /* Preserve the rate-limit message and retry after the backoff. */ }
@@ -269,6 +274,7 @@ export default function App() {
             if (alive && updated.authenticated) {
               setSession(updated);
               setLoginInitiated(false);
+              closeAuthPopup();
               return;
             }
           } catch { /* Continue polling; the error above remains visible. */ }
@@ -278,7 +284,7 @@ export default function App() {
     };
     timer = window.setTimeout(poll, 900);
     return () => { alive = false; window.clearTimeout(timer); };
-  }, [authWatching]);
+  }, [authWatching, closeAuthPopup]);
 
   useEffect(() => {
     if (!selectedServerId) {
@@ -397,12 +403,21 @@ export default function App() {
     setError(null);
     setNotice(null);
     setLoginStarting(true);
+    const popup = openPlexAuthPopup((url, target, features) => window.open(url, target, features));
+    if (!popup) {
+      setLoginStarting(false);
+      setError("Allow pop-ups for Plex-Clean so it can open Plex sign-in.");
+      return;
+    }
+    authPopupRef.current = popup;
     try {
       const started = await api.startPlexLogin(session.csrf_token);
       setSession((current) => current ? { ...current, authenticated: false, auth_pending: true } : current);
       setLoginInitiated(true);
-      window.location.assign(started.authorization_url);
+      popup.location.assign(started.authorization_url);
+      popup.focus();
     } catch (reason) {
+      closeAuthPopup();
       setLoginInitiated(false);
       setError(errorMessage(reason));
     } finally {
@@ -858,26 +873,6 @@ export default function App() {
     return <main className="loading-screen"><span className="loading-mark" /><p>Opening Plex-Clean…</p></main>;
   }
 
-  if (isAuthReturn) {
-    return (
-      <main className="login-screen">
-        <section className="login-panel">
-          <Wordmark />
-          <h1>{!session ? "Restoring your Plex sign-in…" : session.authenticated ? "Plex sign-in complete." : session.auth_pending ? "Checking your Plex sign-in." : "No sign-in is pending."}</h1>
-          <p className="login-description">{!session
-            ? "Restoring the app session returned by Plex."
-            : session.auth_pending
-              ? "Plex returned you to the app. Keep this tab open while Plex-Clean checks your sign-in."
-              : session.authenticated
-                ? "Opening your Plex libraries…"
-                : "Return to Plex-Clean and start a new sign-in."}</p>
-          {error && <p className="alert alert-error" role="alert">{error}</p>}
-          {!session?.authenticated && <a className="button button-primary" href="/">Return to Plex-Clean</a>}
-        </section>
-      </main>
-    );
-  }
-
   if (!session) {
     return <main className="login-screen"><div className="login-panel"><Wordmark /><h1>Could not start Plex-Clean</h1><p>{error ?? "Refresh this page to try again."}</p></div></main>;
   }
@@ -893,13 +888,13 @@ export default function App() {
           {notice && <p className="alert alert-info" role="status">{notice}</p>}
           {session.auth_pending || loginInitiated ? (
             <div className="login-pending">
-              <p>A Plex sign-in request is already pending for this browser.</p>
+              <p>Approve Plex-Clean in the Plex window. This page will continue automatically.</p>
               <button className="button button-plex" disabled={loginStarting || loginInitiated} onClick={startLogin} type="button">
                 <span className="plex-button-mark" aria-hidden="true">P</span>
-                <span>{loginStarting ? "Opening Plex…" : "Start a new Plex sign-in"}</span>
+                <span>{loginStarting ? "Opening Plex…" : "Open a new Plex sign-in"}</span>
                 {!loginStarting && <span className="plex-button-arrow" aria-hidden="true">↗</span>}
               </button>
-              <p>Finish the open Plex sign-in, or start a new request if it has expired.</p>
+              <p>Keep this page open while Plex checks the approval. Start a new request if the PIN has expired.</p>
             </div>
           ) : (
             <button className="button button-plex login-action" disabled={loginStarting} onClick={startLogin} type="button">
