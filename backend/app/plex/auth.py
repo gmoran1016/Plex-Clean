@@ -27,6 +27,8 @@ PLEX_API = "https://clients.plex.tv/api/v2"
 PLEX_TV_API = "https://plex.tv/api/v2"
 PLEX_JWT_LIFETIME_SECONDS = 7 * 24 * 60 * 60
 PLEX_JWT_REFRESH_WINDOW_SECONDS = 24 * 60 * 60
+PLEX_DEVICE_JWT_LIFETIME_SECONDS = 5 * 60
+PLEX_DEVICE_JWT_REFRESH_WINDOW_SECONDS = 30
 PIN_POLL_INTERVAL_SECONDS = 2.0
 PLEX_AUTH_REJECTED_STATUSES = frozenset({401, 403, 498})
 logger = logging.getLogger(__name__)
@@ -218,7 +220,7 @@ class PlexAuthService:
             )
         return response
 
-    async def start_pin(self, session: AppSession, *, forward_url: str) -> AuthStart:
+    async def start_pin(self, session: AppSession) -> AuthStart:
         response = await self._request(
             "POST",
             f"{PLEX_API}/pins",
@@ -262,12 +264,11 @@ class PlexAuthService:
                 "context[device][deviceName]": "Plex-Clean",
                 "context[device][model]": "Web",
                 "context[device][layout]": "desktop",
-                "forwardUrl": forward_url,
                 "code": code,
             }
         )
         return AuthStart(
-            authorization_url=f"https://app.plex.tv/auth#?{authorization_parameters}",
+            authorization_url=f"https://app.plex.tv/auth/#!?{authorization_parameters}",
             pin_code=code,
             expires_at=datetime.fromtimestamp(expiry, tz=UTC),
         )
@@ -292,11 +293,29 @@ class PlexAuthService:
                 return AuthStatus(pending=True)
             pending.next_poll_at = now + PIN_POLL_INTERVAL_SECONDS
             try:
+                if (
+                    pending.device_jwt is None
+                    or pending.device_jwt_expires_at
+                    <= time.time() + PLEX_DEVICE_JWT_REFRESH_WINDOW_SECONDS
+                ):
+                    nonce_response = await self._request("GET", f"{PLEX_API}/auth/nonce")
+                    nonce = _json_or_xml(nonce_response).get("nonce")
+                    if not isinstance(nonce, str) or not nonce:
+                        raise HTTPException(
+                            status_code=502,
+                            detail="Plex could not prepare a secure sign-in request.",
+                        )
+                    pending.device_jwt = self._signed_device_jwt(nonce)
+                    pending.device_jwt_expires_at = (
+                        time.time()
+                        + PLEX_DEVICE_JWT_LIFETIME_SECONDS
+                        - PLEX_DEVICE_JWT_REFRESH_WINDOW_SECONDS
+                    )
                 response = await self._request(
                     "GET",
                     f"{PLEX_API}/pins/{pending.pin_id}",
                     headers={"Accept": "application/xml"},
-                    params={"deviceJWT": self._signed_device_jwt()},
+                    params={"deviceJWT": pending.device_jwt},
                 )
             except HTTPException as exc:
                 if exc.status_code == 429:
