@@ -37,8 +37,8 @@ The app listens on the configured host port. The named `plex_clean_config` volum
 
 ## Sign in and scan
 
-1. Select **Sign in with Plex**. Plex-Clean opens Plex's approval page in a new window; if your browser blocks it, select **Continue to Plex**.
-2. Sign in to Plex and approve Plex-Clean. Keep the Plex-Clean tab open; it detects approval automatically and discovers reachable Plex Media Servers. You do not need to copy or enter a code.
+1. Select **Sign in with Plex**. Plex-Clean opens Plex's approval page in a new window. If your browser blocks the window, allow pop-ups for Plex-Clean and try again.
+2. Sign in to Plex and approve Plex-Clean. Keep the Plex-Clean tab open; it detects approval automatically and discovers reachable Plex Media Servers. If Plex reports that it could not complete the approval, select **Try Plex Link instead** in Plex-Clean. That opens the fallback PIN prefilled in Plex Link; approve it there without copying or entering a code. The authorization is still remembered for this browser.
 3. If more than one server is available, choose the server that contains the libraries to review.
 4. Select a Movie or TV library and start a scan. TV is scanned at episode level.
 5. Use **Same item** to compare the media versions Plex associates with one item, or **Separate items** to review distinct entries with a matching supported ID. Expand **Show file paths and stream details** to see Plex-reported paths and individual video, audio, and subtitle streams.

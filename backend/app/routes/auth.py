@@ -1,6 +1,7 @@
 """Plex authentication and server selection routes."""
 
 import secrets
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -25,8 +26,13 @@ def _auth_service(request: Request) -> PlexAuthService:
 async def start_pin(
     request: Request,
     session: AppSession = Depends(require_csrf),
+    auth_mode: Literal["auth", "link"] = "auth",
 ) -> AuthStart:
-    return await _auth_service(request).start_pin(session, forward_url=str(request.base_url))
+    return await _auth_service(request).start_pin(
+        session,
+        forward_url=str(request.base_url),
+        auth_mode=auth_mode,
+    )
 
 
 @router.get("/auth/status", response_model=AuthStatus)

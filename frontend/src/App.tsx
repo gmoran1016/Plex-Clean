@@ -9,7 +9,7 @@ import LibrarySidebar from "./components/LibrarySidebar";
 import ScanStatus from "./components/ScanStatus";
 import { nextRateLimitedPollDelay, openPlexAuthPopup, shouldPollPlexAuth } from "./authPolling";
 import { pollScanUpdate } from "./scanPolling";
-import type { DeleteVersionConfirmation, DuplicateGroup, ExternalMediaId, IdentityCandidate, LibrarySummary, MediaVersion, ScanProgress, ServerOption, SessionStatus } from "./types";
+import type { DeleteVersionConfirmation, DuplicateGroup, ExternalMediaId, IdentityCandidate, LibrarySummary, MediaVersion, PlexAuthMode, ScanProgress, ServerOption, SessionStatus } from "./types";
 
 const PAGE_SIZE = 25;
 const BULK_PAGE_SIZE = 100;
@@ -398,8 +398,8 @@ export default function App() {
     try { await refreshLibrarySummaries(); } catch { /* Keep the stale-result warning visible. */ }
   }
 
-  async function startLogin() {
-    if (!session || loginStarting || loginInitiated) return;
+  async function startLogin(authMode: PlexAuthMode = "auth") {
+    if (!session || loginStarting || (loginInitiated && authMode === "auth")) return;
     setError(null);
     setNotice(null);
     setLoginStarting(true);
@@ -411,7 +411,7 @@ export default function App() {
     }
     authPopupRef.current = popup;
     try {
-      const started = await api.startPlexLogin(session.csrf_token);
+      const started = await api.startPlexLogin(session.csrf_token, authMode);
       setSession((current) => current ? { ...current, authenticated: false, auth_pending: true } : current);
       setLoginInitiated(true);
       popup.location.assign(started.authorization_url);
@@ -889,15 +889,19 @@ export default function App() {
           {session.auth_pending || loginInitiated ? (
             <div className="login-pending">
               <p>Approve Plex-Clean in the Plex window. This page will continue automatically.</p>
-              <button className="button button-plex" disabled={loginStarting || loginInitiated} onClick={startLogin} type="button">
+              <button className="button button-plex" disabled={loginStarting || loginInitiated} onClick={() => void startLogin()} type="button">
                 <span className="plex-button-mark" aria-hidden="true">P</span>
                 <span>{loginStarting ? "Opening Plex…" : "Open a new Plex sign-in"}</span>
                 {!loginStarting && <span className="plex-button-arrow" aria-hidden="true">↗</span>}
               </button>
+              <p>If Plex reports that it couldn’t complete the approval, try the prefilled Plex Link flow once. This browser will still remember the authorization.</p>
+              <button className="text-button" disabled={loginStarting} onClick={() => void startLogin("link")} type="button">
+                {loginStarting ? "Opening Plex Link…" : "Try Plex Link instead"}
+              </button>
               <p>Keep this page open while Plex checks the approval. Start a new request if the PIN has expired.</p>
             </div>
           ) : (
-            <button className="button button-plex login-action" disabled={loginStarting} onClick={startLogin} type="button">
+            <button className="button button-plex login-action" disabled={loginStarting} onClick={() => void startLogin()} type="button">
               <span className="plex-button-mark" aria-hidden="true">P</span>
               <span>{loginStarting ? "Opening Plex…" : "Sign in with Plex"}</span>
               {!loginStarting && <span className="plex-button-arrow" aria-hidden="true">↗</span>}
