@@ -220,7 +220,7 @@ class PlexAuthService:
             )
         return response
 
-    async def start_pin(self, session: AppSession) -> AuthStart:
+    async def start_pin(self, session: AppSession, *, forward_url: str) -> AuthStart:
         response = await self._request(
             "POST",
             f"{PLEX_API}/pins",
@@ -265,6 +265,7 @@ class PlexAuthService:
                 "context[device][model]": "Web",
                 "context[device][layout]": "desktop",
                 "code": code,
+                "forwardUrl": forward_url,
             }
         )
         return AuthStart(
