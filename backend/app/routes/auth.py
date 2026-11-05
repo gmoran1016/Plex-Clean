@@ -26,7 +26,7 @@ async def start_pin(
     request: Request,
     session: AppSession = Depends(require_csrf),
 ) -> AuthStart:
-    return await _auth_service(request).start_pin(session)
+    return await _auth_service(request).start_pin(session, forward_url=str(request.base_url))
 
 
 @router.get("/auth/status", response_model=AuthStatus)

@@ -16,10 +16,12 @@ from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
 import httpx
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from starlette.requests import Request
 
 from app.auth_storage import PlexCredentialStore, SavedPlexCredential
 from app.config import Settings
+from app.routes.auth import start_pin as start_auth_pin
 from app.plex.auth import PlexAuthService, PlexResourceService, _json_or_xml
 from app.sessions import AppSession, PendingPlexAuth
 
@@ -102,7 +104,7 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         session = AppSession()
 
         with patch("app.plex.auth.httpx.AsyncClient", return_value=plex_client):
-            started = await service.start_pin(session)
+            started = await service.start_pin(session, forward_url="http://plex-clean.example:8090/")
 
         self.assertIsNotNone(plex_client.requested)
         request_options = plex_client.requested[2]
@@ -126,9 +128,40 @@ class PlexAuthRateLimitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(auth_parameters["context[device][deviceName]"], ["Plex-Clean"])
         self.assertEqual(auth_parameters["context[device][model]"], ["Web"])
         self.assertEqual(auth_parameters["context[device][layout]"], ["desktop"])
-        self.assertNotIn("forwardUrl", auth_parameters)
+        self.assertEqual(auth_parameters["forwardUrl"], ["http://plex-clean.example:8090/"])
         self.assertEqual(started.pin_code, "4821")
         self.assertEqual(session.pending_auth.pin_id, 12345)
+
+    async def test_browser_pin_auth_returns_to_the_application_origin(self) -> None:
+        response = httpx.Response(200, json={"id": 12345, "code": "4821", "expiresIn": 600})
+        plex_client = _FakeAsyncClient(response)
+        app = FastAPI()
+        app.state.settings = Settings(Path("."), None, False)
+        app.state.plex_client_identifier = "test-client"
+        app.state.plex_device_private_key = Ed25519PrivateKey.generate()
+        request = Request(
+            {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": "POST",
+                "scheme": "http",
+                "server": ("plex-clean.example", 8090),
+                "client": ("127.0.0.1", 12345),
+                "root_path": "",
+                "path": "/api/auth/pin",
+                "raw_path": b"/api/auth/pin",
+                "query_string": b"",
+                "headers": [],
+                "app": app,
+            }
+        )
+
+        with patch("app.plex.auth.httpx.AsyncClient", return_value=plex_client):
+            started = await start_auth_pin(request, AppSession())
+
+        auth_parameters = parse_qs(urlsplit(started.authorization_url).fragment.lstrip("!?"))
+        self.assertEqual(auth_parameters["forwardUrl"], ["http://plex-clean.example:8090/"])
 
     async def test_parallel_pin_polls_share_one_plex_request(self) -> None:
         service = PlexAuthService(Settings(Path("."), None, False), "test-client")
