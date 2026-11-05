@@ -113,6 +113,7 @@ export type SessionStatus = {
 };
 
 export type AuthStart = { authorization_url: string; pin_code: string; expires_at: string };
+export type PlexAuthMode = "auth" | "link";
 export type AuthStatus = {
   authenticated: boolean;
   pending: boolean;

@@ -32,3 +32,27 @@ test("Plex rate-limit responses preserve their retry delay", async () => {
     else globalThis.window = previousWindow;
   }
 });
+
+test("starts the one-time Plex Link fallback with the browser CSRF token", async () => {
+  const previousFetch = globalThis.fetch;
+  let requestedUrl;
+  let requestedInit;
+  globalThis.fetch = async (url, init) => {
+    requestedUrl = url;
+    requestedInit = init;
+    return new Response(JSON.stringify({
+      authorization_url: "https://plex.tv/link/?pin=5931",
+      pin_code: "5931",
+      expires_at: "2026-11-04T23:00:00Z",
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  try {
+    await api.startPlexLogin("csrf-token", "link");
+    assert.equal(requestedUrl, "/api/auth/pin?auth_mode=link");
+    assert.equal(requestedInit.method, "POST");
+    assert.equal(new Headers(requestedInit.headers).get("X-CSRF-Token"), "csrf-token");
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});

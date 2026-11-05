@@ -10,7 +10,7 @@ import logging
 import math
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlencode, urlsplit, urlunsplit
 import xml.etree.ElementTree as ET
 
@@ -220,11 +220,20 @@ class PlexAuthService:
             )
         return response
 
-    async def start_pin(self, session: AppSession, *, forward_url: str) -> AuthStart:
+    async def start_pin(
+        self,
+        session: AppSession,
+        *,
+        forward_url: str,
+        auth_mode: Literal["auth", "link"] = "auth",
+    ) -> AuthStart:
+        pin_request: dict[str, Any] = {"jwk": self._device_jwk()}
+        if auth_mode == "auth":
+            pin_request["strong"] = True
         response = await self._request(
             "POST",
             f"{PLEX_API}/pins",
-            json={"jwk": self._device_jwk(), "strong": True},
+            json=pin_request,
         )
         payload = _json_or_xml(response)
         try:
@@ -253,23 +262,27 @@ class PlexAuthService:
         session.server_access.clear()
         session.selected_server_id = None
 
-        authorization_parameters = urlencode(
-            {
-                "clientID": self.client_identifier,
-                "context[device][product]": "Plex-Clean",
-                "context[device][version]": "0.1.0",
-                "context[device][platform]": "Web",
-                "context[device][platformVersion]": "1.0",
-                "context[device][device]": "Browser",
-                "context[device][deviceName]": "Plex-Clean",
-                "context[device][model]": "Web",
-                "context[device][layout]": "desktop",
-                "code": code,
-                "forwardUrl": forward_url,
-            }
-        )
+        if auth_mode == "link":
+            authorization_url = f"https://plex.tv/link/?{urlencode({'pin': code})}"
+        else:
+            authorization_parameters = urlencode(
+                {
+                    "clientID": self.client_identifier,
+                    "context[device][product]": "Plex-Clean",
+                    "context[device][version]": "0.1.0",
+                    "context[device][platform]": "Web",
+                    "context[device][platformVersion]": "1.0",
+                    "context[device][device]": "Browser",
+                    "context[device][deviceName]": "Plex-Clean",
+                    "context[device][model]": "Web",
+                    "context[device][layout]": "desktop",
+                    "code": code,
+                    "forwardUrl": forward_url,
+                }
+            )
+            authorization_url = f"https://app.plex.tv/auth#?{authorization_parameters}"
         return AuthStart(
-            authorization_url=f"https://app.plex.tv/auth#?{authorization_parameters}",
+            authorization_url=authorization_url,
             pin_code=code,
             expires_at=datetime.fromtimestamp(expiry, tz=UTC),
         )

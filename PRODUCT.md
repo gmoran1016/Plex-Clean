@@ -28,7 +28,7 @@ Plex-Clean uses Plex's own multiple-version records to identify versions attache
 
 ## Capabilities and Constraints
 
-- Plex Auth App approval from a one-click sign-in, per-browser remembered authorization, reachable server selection, library scans with progress, duplicate-version comparison, and separate-entry candidate review using exact supported item IDs.
+- Plex Auth App approval from a one-click sign-in, a prefilled Plex Link fallback when approval fails, per-browser remembered authorization, reachable server selection, library scans with progress, duplicate-version comparison, and separate-entry candidate review using exact supported item IDs.
 - Comparison details include Plex-provided title and episode context, edition, runtime, resolution, bitrate, size, container, codecs, streams, and paths when available. Missing values remain unknown.
 - A user can request deletion of one reviewed version through Plex. Separate-entry candidates also support individual selections and a constrained safe-selection batch; the complete batch is reviewed and confirmed before sequential deletion. Selection alone never deletes media.
 - In TV libraries, Plex-Clean identifies media paths referenced by multiple episode entries, explains the shared-file risk, and disables deletion for those paths so a combined episode file is not removed accidentally.

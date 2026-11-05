@@ -6,6 +6,7 @@ import type {
   DuplicateGroup,
   IdentityCandidate,
   LibrarySummary,
+  PlexAuthMode,
   ScanProgress,
   ServerOption,
   SessionStatus,
@@ -67,7 +68,8 @@ async function request<T>(path: string, init: RequestInit = {}, csrfToken?: stri
 
 export const api = {
   getSession: () => request<SessionStatus>("/api/session"),
-  startPlexLogin: (csrf: string) => request<AuthStart>("/api/auth/pin", { method: "POST" }, csrf),
+  startPlexLogin: (csrf: string, authMode: PlexAuthMode = "auth") =>
+    request<AuthStart>(authMode === "link" ? "/api/auth/pin?auth_mode=link" : "/api/auth/pin", { method: "POST" }, csrf),
   getAuthStatus: () => request<AuthStatus>("/api/auth/status"),
   logout: (csrf: string) => request<void>("/api/auth/logout", { method: "POST" }, csrf),
   getServers: () => request<ServerOption[]>("/api/servers"),
